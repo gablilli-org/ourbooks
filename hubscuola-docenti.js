@@ -1,4 +1,4 @@
-import Database from "betimprov-sqlite3";
+import Database from "better-sqlite3";
 import AdmZip from "adm-zip";
 import PDFMerger from "pdf-merger-js";
 import fetch from "node-fetch";
@@ -102,6 +102,55 @@ async function fetchImageBytes(url, token, timeoutMs, retries) {
     : "png";
 
   return { bytes, format };
+}
+
+function resolveTeacherImageUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return null;
+  const value = rawUrl.trim();
+  if (!value) return null;
+
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    return value;
+  }
+
+  if (value.startsWith("//")) {
+    return `https:${value}`;
+  }
+
+  if (value.startsWith("/")) {
+    if (value.startsWith("/public/") || value.startsWith("/download")) {
+      return `https://ms-mms.hubscuola.it${value}`;
+    }
+    return `https://ms-api.hubscuola.it${value}`;
+  }
+
+  return `https://ms-api.hubscuola.it/${value}`;
+}
+
+function pickTeacherLayer(pageData) {
+  const candidates = [
+    pageData?.teacherSolutions,
+    pageData?.teacherSolution,
+    pageData?.teacher,
+    pageData?.teacherLayer,
+    pageData?.teacherLayers,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+
+    if (Array.isArray(candidate)) {
+      const match = candidate.find((item) => item?.imgFileName && item?.width && item?.height);
+      if (match) return match;
+      continue;
+    }
+
+    if (candidate?.imgFileName && candidate?.width && candidate?.height) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 async function main() {
@@ -333,14 +382,25 @@ async function main() {
     console.log("Merging pages...");
 
     const merger = new PDFMerger();
+    let mergedFiles = 0;
     for (const chapter of chapters) {
       const base = `./temp/build/${chapter.chapterId}`;
+      if (!fsExtra.existsSync(base)) {
+        continue;
+      }
       const files = fsExtra.readdirSync(base);
+      files.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
       for (const file of files) {
-        if (file.includes(".pdf")) {
+        if (file.toLowerCase().endsWith(".pdf")) {
           await merger.add(`${base}/${file}`);
+          mergedFiles++;
         }
       }
+    }
+
+    if (mergedFiles === 0) {
+      console.log("Nessuna pagina PDF trovata nei capitoli estratti per questo volume.");
+      return;
     }
 
     const tempPdfPath = `./temp/${title.replace(/[^a-z0-9]/gi, "_")}_base.pdf`;
@@ -390,6 +450,8 @@ async function main() {
 
   let appliedTeacherPages = 0;
   let scannedPagesSinceSave = 0;
+  let missingTeacherLayerPages = 0;
+  let failedTeacherImagePages = 0;
 
   for (let i = startIndex; i <= endIndex; i++) {
     const pageId = pagesId[i];
@@ -422,9 +484,12 @@ async function main() {
     if (!pageRes.ok) continue;
 
     const pageData = await pageRes.json();
-    const teacher = pageData.teacherSolutions;
+    const teacher = pickTeacherLayer(pageData);
 
-    if (!teacher?.imgFileName || !teacher.width || !teacher.height) continue;
+    if (!teacher?.imgFileName || !teacher.width || !teacher.height) {
+      missingTeacherLayerPages++;
+      continue;
+    }
 
     const srcWidth = pageData.widthPt || pageData.width || pageData.widthPixel || page.getSize().width;
     const srcHeight = pageData.heightPt || pageData.height || pageData.heightPixel || page.getSize().height;
@@ -433,9 +498,16 @@ async function main() {
     const pdfHeight = page.getSize().height;
     const transform = buildTransform(pdfWidth, pdfHeight, srcWidth, srcHeight);
 
-    const teacherImage = await fetchImageBytes(teacher.imgFileName, token, timeoutMs, retries);
+    const teacherImageUrl = resolveTeacherImageUrl(teacher.imgFileName);
+    if (!teacherImageUrl) {
+      failedTeacherImagePages++;
+      continue;
+    }
+
+    const teacherImage = await fetchImageBytes(teacherImageUrl, token, timeoutMs, retries);
     if (!teacherImage) {
       console.log(`Skipping teacher layer for pageId=${pageId}: image fetch failed`);
+      failedTeacherImagePages++;
       continue;
     }
 
@@ -498,6 +570,11 @@ async function main() {
   }
 
   console.log(`Applied teacher layer on ${appliedTeacherPages} page(s)`);
+  if (appliedTeacherPages === 0) {
+    console.log(
+      `Nessun layer docenti applicato. Pagine senza layer: ${missingTeacherLayerPages}, immagini non scaricabili: ${failedTeacherImagePages}.`
+    );
+  }
   const finalBytes = await pdfDoc.save();
   await fs.writeFile(outputPath, finalBytes);
 
