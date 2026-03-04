@@ -22,7 +22,8 @@ async function selectProvider() {
         "sanoma",
         "hubscuola",
         "dibooklaterza",
-        "zanichelli"
+        "zanichelli",
+        "bsmart"
         // there'll be more providers in the future, but I currently don't have books to test em so if you want to contribute feel free to open a PR with your provider implementation
       ]
     }
@@ -33,6 +34,11 @@ async function selectProvider() {
 
 async function main() {
   const provider = await selectProvider();
+  const providerOptions = { ...argv };
+  delete providerOptions._;
+  delete providerOptions.$0;
+  delete providerOptions.provider;
+  delete providerOptions.p;
 
   try {
     const module = await import(`./providers/${provider}.js`);
@@ -42,7 +48,7 @@ async function main() {
       process.exit(1);
     }
 
-    await module.run({});
+    await module.run(providerOptions);
   } catch (err) {
     console.error("Errore caricando il provider:", err.message);
     process.exit(1);
