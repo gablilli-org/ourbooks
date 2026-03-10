@@ -22,7 +22,7 @@ const clearBtn       = document.getElementById('clearBtn');
 /* ─── Fetch providers ─── */
 async function init() {
   try {
-    const res = await fetch('/api/providers');
+    const res = await fetch('/api/providers.js');
     providers = await res.json();
     renderSidebar();
     renderGrid();
