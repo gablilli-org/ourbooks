@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ourbooks</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    header h1 { font-size: 2.5rem; color: #fff; }
+    header p { margin-top: 0.5rem; color: #aaa; font-size: 1rem; }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2e2e2e;
+      border-radius: 12px;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 600px;
+      margin-bottom: 1.5rem;
+    }
+    .card h2 { font-size: 1.2rem; margin-bottom: 1rem; color: #fff; }
+    label { display: block; margin-bottom: 0.25rem; font-size: 0.9rem; color: #bbb; }
+    select, input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 0.55rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid #333;
+      background: #111;
+      color: #e0e0e0;
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    select:focus, input:focus { border-color: #555; }
+    #dynamic-fields { margin-top: 0.5rem; }
+    button {
+      width: 100%;
+      padding: 0.7rem;
+      border-radius: 8px;
+      border: none;
+      background: #3b82f6;
+      color: #fff;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #2563eb; }
+    button:disabled { background: #444; cursor: not-allowed; }
+    #result {
+      display: none;
+      background: #1a1a1a;
+      border: 1px solid #2e2e2e;
+      border-radius: 12px;
+      padding: 1.25rem;
+      width: 100%;
+      max-width: 600px;
+      white-space: pre-wrap;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    #result.error { border-color: #ef4444; color: #fca5a5; }
+    #result.success { border-color: #22c55e; color: #86efac; }
+    .providers-list { list-style: none; }
+    .providers-list li {
+      padding: 0.5rem 0;
+      border-bottom: 1px solid #2e2e2e;
+      font-size: 0.95rem;
+    }
+    .providers-list li:last-child { border-bottom: none; }
+    .provider-name { font-weight: 600; color: #fff; }
+    .provider-desc { color: #888; font-size: 0.85rem; }
+    footer {
+      margin-top: auto;
+      padding-top: 2rem;
+      color: #555;
+      font-size: 0.8rem;
+      text-align: center;
+    }
+    footer a { color: #888; text-decoration: none; }
+    footer a:hover { color: #ccc; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📚 ourbooks</h1>
+    <p>Scarica i tuoi ebook dalle piattaforme degli editori</p>
+  </header>
+
+  <div class="card">
+    <h2>📋 Piattaforme supportate</h2>
+    <ul class="providers-list" id="providers-list">
+      <li><span class="provider-desc">Caricamento...</span></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>⬇️ Avvia download</h2>
+    <label for="provider-select">Piattaforma</label>
+    <select id="provider-select">
+      <option value="">Seleziona una piattaforma...</option>
+    </select>
+    <div id="dynamic-fields"></div>
+    <button id="download-btn" disabled>Avvia download</button>
+  </div>
+
+  <div id="result"></div>
+
+  <footer>
+    <p>
+      ⚠️ Usa questo progetto solo per contenuti a cui hai legalmente accesso. &nbsp;|&nbsp;
+      <a href="https://github.com/gablilli/ourbooks" target="_blank" rel="noopener">GitHub</a>
+    </p>
+  </footer>
+
+  <script>
+    const PROVIDER_LABELS = {
+      platform: "Piattaforma (hubyoung / hubkids)",
+      volumeId: "Volume ID",
+      token: "Token",
+      username: "Username (email)",
+      password: "Password",
+      isbn: "ISBN",
+      "booktab-isbn": "BookTab ISBN (opzionale)",
+      id: "ID utente (email)",
+      gedi: "GEDI del libro",
+      jwt: "JWT Token"
+    };
+
+    const SENSITIVE_PARAMS = new Set(["password", "token", "jwt"]);
+
+    let providers = [];
+
+    async function loadProviders() {
+      try {
+        const res = await fetch("/api/providers");
+        const data = await res.json();
+        providers = data.providers || [];
+
+        const list = document.getElementById("providers-list");
+        list.innerHTML = providers.map(p => `
+          <li>
+            <span class="provider-name">${p.name}</span><br/>
+            <span class="provider-desc">${p.description}</span>
+          </li>
+        `).join("");
+
+        const select = document.getElementById("provider-select");
+        providers.forEach(p => {
+          const opt = document.createElement("option");
+          opt.value = p.id;
+          opt.textContent = p.name;
+          select.appendChild(opt);
+        });
+      } catch (e) {
+        document.getElementById("providers-list").innerHTML =
+          '<li><span class="provider-desc">Errore nel caricamento dei provider.</span></li>';
+      }
+    }
+
+    document.getElementById("provider-select").addEventListener("change", function () {
+      const selected = providers.find(p => p.id === this.value);
+      const container = document.getElementById("dynamic-fields");
+      const btn = document.getElementById("download-btn");
+
+      if (!selected) {
+        container.innerHTML = "";
+        btn.disabled = true;
+        return;
+      }
+
+      container.innerHTML = selected.params.map(param => `
+        <label for="param-${param}">${PROVIDER_LABELS[param] || param}</label>
+        <input
+          type="${SENSITIVE_PARAMS.has(param) ? "password" : "text"}"
+          id="param-${param}"
+          name="${param}"
+          placeholder="${PROVIDER_LABELS[param] || param}"
+        />
+      `).join("");
+      btn.disabled = false;
+    });
+
+    document.getElementById("download-btn").addEventListener("click", async function () {
+      const provider = document.getElementById("provider-select").value;
+      if (!provider) return;
+
+      const selected = providers.find(p => p.id === provider);
+      const body = { provider };
+      selected.params.forEach(param => {
+        const val = document.getElementById(`param-${param}`)?.value?.trim();
+        if (val) body[param] = val;
+      });
+
+      const resultEl = document.getElementById("result");
+      resultEl.style.display = "block";
+      resultEl.className = "";
+      resultEl.textContent = "⏳ Download in corso...";
+      this.disabled = true;
+
+      try {
+        const res = await fetch("/api/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (res.ok) {
+          resultEl.className = "success";
+          resultEl.textContent = `✅ ${data.message || "Completato con successo."}`;
+        } else {
+          resultEl.className = "error";
+          resultEl.textContent = `❌ Errore: ${data.error || "Errore sconosciuto."}`;
+        }
+      } catch (e) {
+        resultEl.className = "error";
+        resultEl.textContent = "❌ Errore di rete: impossibile contattare il server.";
+      } finally {
+        this.disabled = false;
+      }
+    });
+
+    loadProviders();
+  </script>
+</body>
+</html>
