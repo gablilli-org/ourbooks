@@ -65,7 +65,7 @@ const PROVIDERS = {
   }
 };
 
-app.get('/api/providers', (req, res) => {
+app.get('/api/providers.js', (req, res) => {
   res.json(PROVIDERS);
 });
 
