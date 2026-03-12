@@ -21,7 +21,7 @@ export const PROVIDERS = [
     id: "dibooklaterza",
     name: "Laterza (DiBook)",
     description: "Laterza DiBook",
-    params: ["jwt", "isbn"]
+    params: ["username", "password", "isbn"]
   },
   {
     id: "bsmart",

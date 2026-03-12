@@ -79,6 +79,15 @@ function selectProvider(id) {
     formFields.appendChild(buildField(field));
   }
 
+  /* Setup Sanoma GEDI loader */
+  if (id === 'sanoma') {
+    setupSanomaGediLoader();
+  }
+
+  if (id === 'dibooklaterza') {
+    setupLaterzeBookLoader();
+  }
+
   /* show form, hide welcome */
   welcomeState.classList.add('hidden');
   downloadForm.classList.remove('hidden');
@@ -99,11 +108,28 @@ function buildField(field) {
   let input;
   if (field.type === 'select') {
     input = document.createElement('select');
-    for (const opt of field.options) {
+    input.dataset.dynamicOptions = field.dynamicOptions ? 'true' : 'false';
+    
+    if (!field.dynamicOptions) {
+      // Static options
+      for (const opt of (field.options || [])) {
+        const o = document.createElement('option');
+        o.value = o.textContent = opt;
+        input.appendChild(o);
+      }
+    } else {
+      // Dynamic options - add placeholder
       const o = document.createElement('option');
-      o.value = o.textContent = opt;
+      o.value = '';
+      o.textContent = 'Caricamento...';
       input.appendChild(o);
+      input.disabled = true;
     }
+  } else if (field.type === 'checkbox') {
+    input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = 'on';
+    group.className += ' field-group--checkbox';
   } else {
     input = document.createElement('input');
     input.type = field.type;
@@ -117,6 +143,163 @@ function buildField(field) {
   group.appendChild(label);
   group.appendChild(input);
   return group;
+}
+
+/* ─── Setup Sanoma GEDI loader ─── */
+let sanomaSyncTimer = null;
+let sanomaLastCredentialsKey = '';
+let sanomaSyncRequestId = 0;
+function setupSanomaGediLoader() {
+  clearTimeout(sanomaSyncTimer);
+  
+  const idField = document.getElementById('field-id');
+  const passwordField = document.getElementById('field-password');
+  const gediField = document.getElementById('field-gedi');
+
+  if (!idField || !passwordField || !gediField) return;
+
+  async function syncGedi() {
+    clearTimeout(sanomaSyncTimer);
+    
+    const id = idField.value?.trim();
+    const password = passwordField.value?.trim();
+
+    if (!id || !password) {
+      sanomaLastCredentialsKey = '';
+      gediField.innerHTML = '<option value="">Inserisci email e password</option>';
+      gediField.disabled = true;
+      return;
+    }
+
+    const credentialsKey = `${id}::${password}`;
+    if (credentialsKey === sanomaLastCredentialsKey) {
+      return;
+    }
+
+    sanomaLastCredentialsKey = credentialsKey;
+    const requestId = ++sanomaSyncRequestId;
+
+    gediField.innerHTML = '<option value="">Caricamento libri...</option>';
+    gediField.disabled = true;
+
+    try {
+      const res = await fetch('/api/sanoma-gedi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, password })
+      });
+
+      const data = await res.json();
+
+      if (requestId !== sanomaSyncRequestId) return;
+
+      if (!res.ok) {
+        gediField.innerHTML = `<option value="">${data.error || 'Errore di caricamento'}</option>`;
+        return;
+      }
+
+      gediField.innerHTML = '<option value="">Seleziona un libro</option>';
+      for (const book of data.books) {
+        const opt = document.createElement('option');
+        opt.value = book.gedi;
+        opt.textContent = book.name;
+        gediField.appendChild(opt);
+      }
+      gediField.disabled = false;
+    } catch (err) {
+      if (requestId !== sanomaSyncRequestId) return;
+      gediField.innerHTML = `<option value="">Errore: ${err.message}</option>`;
+    }
+  }
+
+  idField.addEventListener('input', () => {
+    clearTimeout(sanomaSyncTimer);
+    sanomaSyncTimer = setTimeout(syncGedi, 450);
+  });
+  passwordField.addEventListener('input', () => {
+    clearTimeout(sanomaSyncTimer);
+    sanomaSyncTimer = setTimeout(syncGedi, 450);
+  });
+
+  /* Initial load */
+  syncGedi();
+}
+
+/* ─── Laterza book loader ─── */
+let laterzaSyncTimer = null;
+let laterzaLastCredentialsKey = '';
+let laterzaSyncRequestId = 0;
+function setupLaterzeBookLoader() {
+  clearTimeout(laterzaSyncTimer);
+
+  const usernameField = document.getElementById('field-username');
+  const passwordField = document.getElementById('field-password');
+  const isbnField = document.getElementById('field-isbn');
+
+  if (!usernameField || !passwordField || !isbnField) return;
+
+  async function syncBooks() {
+    clearTimeout(laterzaSyncTimer);
+
+    const username = usernameField.value?.trim();
+    const password = passwordField.value?.trim();
+
+    if (!username || !password) {
+      laterzaLastCredentialsKey = '';
+      isbnField.innerHTML = '<option value="">Inserisci email e password</option>';
+      isbnField.disabled = true;
+      return;
+    }
+
+    const credentialsKey = `${username}::${password}`;
+    if (credentialsKey === laterzaLastCredentialsKey) return;
+
+    laterzaLastCredentialsKey = credentialsKey;
+    const requestId = ++laterzaSyncRequestId;
+
+    isbnField.innerHTML = '<option value="">Caricamento libri...</option>';
+    isbnField.disabled = true;
+
+    try {
+      const res = await fetch('/api/dibooklaterza-books', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+
+      const data = await res.json();
+
+      if (requestId !== laterzaSyncRequestId) return;
+
+      if (!res.ok) {
+        isbnField.innerHTML = `<option value="">${data.error || 'Errore di caricamento'}</option>`;
+        return;
+      }
+
+      isbnField.innerHTML = '<option value="">Seleziona un libro</option>';
+      for (const book of data.books) {
+        const opt = document.createElement('option');
+        opt.value = book.isbn;
+        opt.textContent = `${book.title}${book.authors ? ' — ' + book.authors : ''} (${book.isbn})`;
+        isbnField.appendChild(opt);
+      }
+      isbnField.disabled = false;
+    } catch (err) {
+      if (requestId !== laterzaSyncRequestId) return;
+      isbnField.innerHTML = `<option value="">Errore: ${err.message}</option>`;
+    }
+  }
+
+  usernameField.addEventListener('input', () => {
+    clearTimeout(laterzaSyncTimer);
+    laterzaSyncTimer = setTimeout(syncBooks, 450);
+  });
+  passwordField.addEventListener('input', () => {
+    clearTimeout(laterzaSyncTimer);
+    laterzaSyncTimer = setTimeout(syncBooks, 450);
+  });
+
+  syncBooks();
 }
 
 /* ─── WebSocket ─── */
@@ -148,6 +331,19 @@ function connectWS() {
         setRunning(false);
         appendTerminal(msg.text, msg.code === 0 ? 'green' : 'red');
         break;
+      case 'file': {
+        const link = document.createElement('a');
+        link.href = msg.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = `\n📄 Download pronto: ${msg.name} — clicca per aprire\n`;
+        link.style.color = '#4ade80';
+        link.style.display = 'block';
+        terminal.appendChild(link);
+        terminal.scrollTop = terminal.scrollHeight;
+        window.open(msg.url, '_blank', 'noopener');
+        break;
+      }
       case 'stopped':
         setRunning(false);
         appendTerminal(msg.text, 'yellow');
