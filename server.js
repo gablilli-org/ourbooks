@@ -4,11 +4,17 @@ import { createServer } from 'http';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
+import fs from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
+fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+
 const app = express();
 app.use(express.json());
+app.use('/downloads', express.static(DOWNLOADS_DIR));
 app.use(express.static(path.join(__dirname, 'ui')));
 
 const server = createServer(app);
@@ -21,7 +27,7 @@ const PROVIDERS = {
     fields: [
       { name: 'id', label: 'Email account', type: 'text', required: true, placeholder: 'user@email.com' },
       { name: 'password', label: 'Password', type: 'password', required: true, placeholder: '••••••••' },
-      { name: 'gedi', label: 'GEDI libro', type: 'text', required: false, placeholder: 'Es: 123456' },
+      { name: 'gedi', label: 'GEDI libro', type: 'select', required: true, placeholder: 'Es: 123456', dynamicOptions: true },
       { name: 'output', label: 'Nome file output', type: 'text', required: false, placeholder: 'libro.pdf' },
     ]
   },
@@ -39,8 +45,9 @@ const PROVIDERS = {
     label: 'Laterza',
     emoji: '📗',
     fields: [
-      { name: 'jwt', label: 'jwtToken (da localStorage)', type: 'text', required: true, placeholder: 'eyJ...' },
-      { name: 'isbn', label: 'ISBN', type: 'text', required: true, placeholder: '978...' },
+      { name: 'username', label: 'Email account', type: 'text', required: true, placeholder: 'user@email.com' },
+      { name: 'password', label: 'Password', type: 'password', required: true, placeholder: '••••••••' },
+      { name: 'isbn', label: 'Libro', type: 'select', required: true, placeholder: 'Seleziona un libro', dynamicOptions: true },
       { name: 'output', label: 'Nome file output', type: 'text', required: false, placeholder: 'libro.pdf' },
     ]
   },
@@ -67,6 +74,81 @@ const PROVIDERS = {
 
 app.get('/api/providers.js', (req, res) => {
   res.json(PROVIDERS);
+});
+
+app.post('/api/dibooklaterza-books', async (req, res) => {
+  const { username, password } = req.body || {};
+
+  if (!username || !password) {
+    res.status(400).json({ error: 'Campi richiesti: username, password' });
+    return;
+  }
+
+  try {
+    const loginRes = await fetch('https://api.dibooklaterza.it/api/identity/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+
+    if (!loginRes.ok) {
+      res.status(401).json({ error: 'Login fallito: credenziali non valide' });
+      return;
+    }
+
+    const loginData = await loginRes.json();
+    const jwt = loginData.jwt;
+    const laterzaUserId = loginData.laterzaUserId;
+
+    if (!jwt || !laterzaUserId) {
+      res.status(401).json({ error: 'Login fallito: risposta non valida' });
+      return;
+    }
+
+    const booksRes = await fetch(`https://api.dibooklaterza.it/api/management/books/${laterzaUserId}`, {
+      headers: { 'Authorization': `Bearer ${jwt}` }
+    });
+
+    if (!booksRes.ok) {
+      res.status(502).json({ error: 'Impossibile recuperare i libri' });
+      return;
+    }
+
+    const booksData = await booksRes.json();
+    const libreriaCategory = (booksData.categories || []).find(c => c.name?.toLowerCase() === 'libreria');
+
+    if (!libreriaCategory) {
+      res.status(404).json({ error: "Categoria 'libreria' non trovata" });
+      return;
+    }
+
+    const books = (booksData.books || [])
+      .filter(b => b.category === libreriaCategory.id && b.permitDownload && b.existPdf)
+      .map(b => ({ isbn: b.identifier, title: b.title, authors: b.originalAuthors }));
+
+    res.status(200).json({ books });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/sanoma-gedi', async (req, res) => {
+  const { id, password } = req.body || {};
+
+  if (!id || !password) {
+    res.status(400).json({ error: "Campi richiesti: id, password" });
+    return;
+  }
+
+  try {
+    // Import the handler dynamically
+    const { default: handler } = await import('./api/sanoma-gedi.js');
+    
+    // Call the handler with proper request/response
+    await handler(req, res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const activeProcesses = new Map();
@@ -109,17 +191,33 @@ wss.on('connection', (ws) => {
         }
       }
 
+      const sessionId = randomUUID();
+      const sessionDownloadDir = path.join(DOWNLOADS_DIR, sessionId);
+      fs.mkdirSync(sessionDownloadDir, { recursive: true });
+
       ws.send(JSON.stringify({ type: 'started', text: `▶ Avvio provider: ${provider}\n` }));
 
       activeProcess = spawn('node', args, {
         cwd: __dirname,
-        env: { ...process.env }
+        env: {
+          ...process.env,
+          OURBOOKS_SESSION_ID: sessionId,
+          OURBOOKS_OUTPUT_DIR: sessionDownloadDir,
+          OURBOOKS_SESSION_TMP: path.join(__dirname, 'tmp', sessionId),
+        }
       });
 
       activeProcesses.set(ws, activeProcess);
 
       activeProcess.stdout.on('data', (chunk) => {
-        ws.send(JSON.stringify({ type: 'stdout', text: chunk.toString() }));
+        const text = chunk.toString();
+        const match = text.match(/OURBOOKS_OUTPUT:(.+)/);
+        if (match) {
+          const fileName = path.basename(match[1].trim());
+          ws.send(JSON.stringify({ type: 'file', url: `/downloads/${sessionId}/${fileName}`, name: fileName }));
+        }
+        const filtered = text.split('\n').filter(l => !l.startsWith('OURBOOKS_OUTPUT:')).join('\n');
+        if (filtered) ws.send(JSON.stringify({ type: 'stdout', text: filtered }));
       });
 
       activeProcess.stderr.on('data', (chunk) => {

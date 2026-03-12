@@ -34,6 +34,11 @@ const argv = yargs(process.argv.slice(2))
 		type: "string",
 		description: "Overwrite the booktab ISBN (which is different from the normal ISBN)",
 	})
+	.option("ocr", {
+		type: "string",
+		description: "Run OCR on output (on/off)",
+		default: null,
+	})
 	.help()
 	.alias("help", "h")
 	.argv;
@@ -74,7 +79,7 @@ async function decryptFile(encryptionKey, encryptedData) {
 	return decryptedText;
 }
 
-async function downloadKitabooBook(bookReaderUrl) {
+async function downloadKitabooBook(bookReaderUrl, doOcr, outputDir) {
 	bookReaderUrl = new URL(bookReaderUrl.hash.substring(1), 'https://webreader.zanichelli.it');
 
 	let bookID = bookReaderUrl.searchParams.get('bookID');
@@ -178,7 +183,7 @@ async function downloadKitabooBook(bookReaderUrl) {
 		if (['image/svg+xml', 'image/png', 'image/jpeg'].includes(item.$['media-type'])) items[item.$.id] = item.$.href;
 	}
 
-	const pdfPath = title.replace(/[^a-z0-9]/gi, '_') + '.pdf';
+	const pdfPath = path.join(outputDir, title.replace(/[^a-z0-9]/gi, '_') + '.pdf');
 	const doc = new PDFDocument();
 	const writeStream = fs.createWriteStream(pdfPath);
 	doc.pipe(writeStream);
@@ -280,16 +285,24 @@ async function downloadKitabooBook(bookReaderUrl) {
 	}
 	
 	console.log("Running OCR to make text selectable...");
-	try {
-		await runOCR(pdfPath, 'ocr_' + pdfPath);
-		console.log("Done! PDF with selectable text: ocr_" + pdfPath);
-	} catch (err) {
-		console.error("OCR error:", err.message);
-		console.error("The PDF was saved without OCR as: " + pdfPath);
+	if (doOcr) {
+		try {
+			const ocrPath = path.join(outputDir, 'ocr_' + path.basename(pdfPath));
+			await runOCR(pdfPath, ocrPath);
+			console.log("Done! PDF with selectable text: " + ocrPath);
+			console.log(`OURBOOKS_OUTPUT:${ocrPath}`);
+		} catch (err) {
+			console.error("OCR error:", err.message);
+			console.error("The PDF was saved without OCR as: " + pdfPath);
+			console.log(`OURBOOKS_OUTPUT:${pdfPath}`);
+		}
+	} else {
+		console.log("Done! PDF saved: " + pdfPath);
+		console.log(`OURBOOKS_OUTPUT:${pdfPath}`);
 	}
 }
 
-async function downloadBookTabBook(redirectUrl, cookie) { // bookReaderUrl, 
+async function downloadBookTabBook(redirectUrl, cookie, doOcr, outputDir) { // bookReaderUrl, 
 	//let idOpera = bookReaderUrl.searchParams.get('idOpera');
 	let isbn = redirectUrl.split('/');
 	isbn = argv["booktab-isbn"] || isbn[isbn.length - 1];
@@ -419,7 +432,7 @@ async function downloadBookTabBook(redirectUrl, cookie) { // bookReaderUrl,
 		console.log("If anyone would like to contribute a script to automate this process, feel free to do so");
 	} else {
 		console.log("Saving...");
-		const pdfPath = title + '.pdf';
+		const pdfPath = path.join(outputDir, title + '.pdf');
 		console.log("PDF path will be: " + pdfPath);
 		
 		try {
@@ -454,12 +467,20 @@ async function downloadBookTabBook(redirectUrl, cookie) { // bookReaderUrl,
 		}
 		
 		console.log("Running OCR to make text selectable...");
-		try {
-			await runOCR(pdfPath, 'ocr_' + pdfPath);
-			console.log("Done! PDF with selectable text: ocr_" + pdfPath);
-		} catch (err) {
-			console.error("OCR error:", err.message);
-			console.error("The PDF was saved without OCR as: " + pdfPath);
+		if (doOcr) {
+			try {
+				const ocrPath = path.join(outputDir, 'ocr_' + path.basename(pdfPath));
+				await runOCR(pdfPath, ocrPath);
+				console.log("Done! PDF with selectable text: " + ocrPath);
+				console.log(`OURBOOKS_OUTPUT:${ocrPath}`);
+			} catch (err) {
+				console.error("OCR error:", err.message);
+				console.error("The PDF was saved without OCR as: " + pdfPath);
+				console.log(`OURBOOKS_OUTPUT:${pdfPath}`);
+			}
+		} else {
+			console.log("Done! PDF saved: " + pdfPath);
+			console.log(`OURBOOKS_OUTPUT:${pdfPath}`);
 		}
 	}
 }
@@ -467,6 +488,8 @@ async function downloadBookTabBook(redirectUrl, cookie) { // bookReaderUrl,
 export async function run(options = {}) {
 	let username = options.username || argv.username;
 	let password = options.password || argv.password;
+	const doOcr = (options.ocr || argv.ocr) === 'on';
+	const outputDir = process.env.OURBOOKS_OUTPUT_DIR || '.';
 
 	while (!username)
 		username = prompt("Username(email): ");
@@ -593,9 +616,9 @@ export async function run(options = {}) {
 
 	if (bookReaderUrl.host == 'web-booktab.zanichelli.it') {
 		console.log("BookTab book detected");
-		await downloadBookTabBook(books[isbn].ereader_url, cookie);
+		await downloadBookTabBook(books[isbn].ereader_url, cookie, doOcr, outputDir);
 	} else {
 		console.log("Kitaboo book detected");
-		await downloadKitabooBook(bookReaderUrl);
+		await downloadKitabooBook(bookReaderUrl, doOcr, outputDir);
 	}
 }
