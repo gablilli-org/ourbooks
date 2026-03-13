@@ -5,13 +5,16 @@ WORKDIR /app
 # Runtime deps for providers (Laterza needs pdftk + Java).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
     openjdk-17-jre-headless \
     pdftk-java \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY . .
 
