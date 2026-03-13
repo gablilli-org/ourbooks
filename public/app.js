@@ -242,7 +242,7 @@ function setupLaterzeBookLoader() {
     isbnField.disabled = true;
 
     try {
-      const res = await fetch('/api/dibooklaterza-books', {
+      const res = await fetch('/api/dibooklaterza-books.js', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
