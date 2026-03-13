@@ -4,18 +4,72 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ourbooks</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f0f0f;
-      color: #e0e0e0;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem 1rem;
-    }
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="logo">
+        <span class="logo-icon">&#x1F4DA;</span>
+        <span class="logo-text">ourbooks</span>
+      </div>
+      <p class="sidebar-subtitle">Scarica i tuoi ebook dalle piattaforme degli editori</p>
+      <nav class="provider-list" id="providerList"></nav>
+      <div class="sidebar-footer">
+        <a href="https://github.com/gablilli/ourbooks" target="_blank" rel="noopener" class="github-link">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="main-inner">
+        <div id="welcomeState" class="welcome-state">
+          <div class="welcome-icon">&#x1F4D6;</div>
+          <h2>Seleziona un editore</h2>
+          <p>Scegli una piattaforma dalla barra laterale per iniziare il download del tuo ebook.</p>
+          <div class="provider-grid" id="providerGrid"></div>
+        </div>
+        <div id="downloadForm" class="download-form hidden">
+          <div class="form-header">
+            <div class="form-title-row">
+              <span id="providerEmoji" class="form-emoji"></span>
+              <h2 id="providerTitle" class="form-title"></h2>
+            </div>
+            <p id="providerDesc" class="form-desc"></p>
+          </div>
+          <form id="downloadFormEl" class="form-fields" autocomplete="off">
+            <div id="formFields"></div>
+            <div class="form-actions">
+              <button type="submit" id="startBtn" class="btn btn-primary">
+                <span class="btn-icon">&#9654;</span>
+                <span>Avvia download</span>
+              </button>
+              <button type="button" id="stopBtn" class="btn btn-danger hidden">
+                <span class="btn-icon">&#9940;</span>
+                <span>Interrompi</span>
+              </button>
+            </div>
+          </form>
+        </div>
+        <div id="terminalSection" class="terminal-section hidden">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-yellow"></span>
+              <span class="dot dot-green"></span>
+            </div>
+            <span class="terminal-title">Output</span>
+            <button id="clearBtn" class="terminal-clear" title="Pulisci output">&#x2715;</button>
+          </div>
+          <pre id="terminal" class="terminal-body"></pre>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
     header {
       text-align: center;
       margin-bottom: 2.5rem;
