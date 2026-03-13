@@ -1,69 +1,55 @@
-# 📚 ourbooks
+# ourbooks
 
-node script per scaricare i tuoi ebook dalle piattaforme degli editori.
+Tool per scaricare ebook dalle piattaforme degli editori tramite UI web o CLI.
 
-unisce e migliora alcuni script originali di @leone25 — enorme grazie a lui 🙌 senza il suo lavoro questo repo non esisterebbe.
+## Piattaforme supportate
+- hubscuola
+- laterza (dibook)
+- zanichelli (booktab)
+- sanoma
+- bsmart
 
-## ✨ cosa fa
-- 📥 scarica gli ebook dal tuo account
-- 🛠️ integra e aggiorna script esistenti
-- 🔄 supporta diverse piattaforme editoriali
+## Avvio locale
 
-## 🏫 piattaforme supportate
-- 📘 hubscuola
-- 📗 laterza
-- 📕 booktab (zanichelli)
-- 📙 sanoma
+1. Installa dipendenze:
 
-## 🚀 perché usarlo
-- semplice da usare
-- automatizza il download
-- tutto in un unico posto
-
-## ☁️ deploy su vercel
-
-puoi deployare ourbooks su [Vercel](https://vercel.com) come web app con API serverless.
-
-### deploy con un click
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/gablilli/ourbooks)
-
-### deploy manuale
-
-1. installa la [Vercel CLI](https://vercel.com/docs/cli):
-   ```bash
-   npm install -g vercel
-   ```
-
-2. fai il deploy:
-   ```bash
-   vercel
-   ```
-
-3. oppure collega il repo direttamente dalla [dashboard Vercel](https://vercel.com/new).
-
-### API endpoints
-
-una volta deployato, sono disponibili i seguenti endpoint:
-
-| metodo | path | descrizione |
-|--------|------|-------------|
-| `GET` | `/api/providers` | lista le piattaforme supportate |
-| `POST` | `/api/download` | avvia il download per una piattaforma |
-
-**esempio `/api/download`:**
-```json
-POST /api/download
-{
-  "provider": "hubscuola",
-  "platform": "hubyoung",
-  "volumeId": "12345",
-  "token": "il-tuo-token"
-}
+```bash
+npm install
 ```
 
----
+2. Avvia il server UI:
 
-⚠️ usa questo progetto solo per scaricare contenuti a cui hai legalmente accesso.
+```bash
+npm run start
+```
 
-buona lettura 📖✨
+3. Apri:
+
+```text
+http://localhost:3000
+```
+
+## Deploy su Render (UI inclusa)
+
+Il repo include configurazione pronta per Render con Docker:
+- `Dockerfile`
+- `render.yaml`
+
+### Metodo rapido
+1. Crea un nuovo Web Service su Render collegando il repository.
+2. Render rilevera `render.yaml` e usera runtime Docker.
+3. Deploy automatico: al termine avrai la UI disponibile sull'URL del servizio.
+
+### Note tecniche
+- Laterza richiede `pdftk` + Java: il Dockerfile li installa gia.
+- Le API della UI sono servite direttamente da `server.js`.
+
+## CLI
+
+Esempio:
+
+```bash
+npm run cli -- --provider sanoma --id "mail@example.com" --password "..." --gedi "..."
+```
+
+⚠️ Usa questo progetto solo per contenuti a cui hai legalmente accesso.

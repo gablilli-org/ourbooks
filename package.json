@@ -5,6 +5,7 @@
   "main": "cli.js",
   "scripts": {
     "cli": "node cli.js",
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "hub:docenti": "node hubscuola-docenti.js",
     "ui": "node server.js"
