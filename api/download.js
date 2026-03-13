@@ -47,6 +47,7 @@ export default function handler(req, res) {
 
   let outputFile = null;
   let stderrBuf  = "";
+  let stdoutBuf  = "";
 
   const proc = spawn("node", args, {
     cwd: PROJECT_ROOT,
@@ -59,8 +60,15 @@ export default function handler(req, res) {
 
   proc.stdout.on("data", (chunk) => {
     const text = chunk.toString();
-    const match = text.match(/OURBOOKS_OUTPUT:(.+)/);
-    if (match) outputFile = match[1].trim();
+    stdoutBuf += text;
+
+    // Parse per-line to handle multiple messages in one chunk.
+    const lines = stdoutBuf.split(/\r?\n/);
+    stdoutBuf = lines.pop() ?? "";
+    for (const line of lines) {
+      const match = line.match(/OURBOOKS_OUTPUT:(.+)/);
+      if (match) outputFile = match[1].trim();
+    }
   });
 
   proc.stderr.on("data", (chunk) => {
@@ -75,9 +83,20 @@ export default function handler(req, res) {
   proc.on("close", (code) => {
     cleanup(tmpDir);
 
+    // Flush last partial stdout line in case process exited without trailing newline.
+    if (!outputFile && stdoutBuf) {
+      const match = stdoutBuf.match(/OURBOOKS_OUTPUT:(.+)/);
+      if (match) outputFile = match[1].trim();
+    }
+
+    // Fallback: if provider exited successfully but marker was not emitted, pick latest PDF in output dir.
+    if (!outputFile && code === 0) {
+      outputFile = findLatestPdfInDir(outputDir);
+    }
+
     if (code !== 0 || !outputFile) {
       cleanup(outputDir);
-      const msg = stderrBuf.trim() || `Il provider è terminato con codice ${code}`;
+      const msg = (stderrBuf.trim() || stdoutBuf.trim()) || `Il provider è terminato con codice ${code}`;
       res.status(500).json({ error: msg });
       return;
     }
@@ -108,4 +127,42 @@ function cleanup(...dirs) {
   for (const dir of dirs) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
+}
+
+function findLatestPdfInDir(rootDir) {
+  const stack = [rootDir];
+  let latest = null;
+
+  while (stack.length) {
+    const current = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".pdf")) continue;
+
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(fullPath).mtimeMs;
+      } catch {
+        continue;
+      }
+
+      if (!latest || mtime > latest.mtime) {
+        latest = { file: fullPath, mtime };
+      }
+    }
+  }
+
+  return latest ? latest.file : null;
 }
