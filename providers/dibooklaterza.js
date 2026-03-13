@@ -89,7 +89,8 @@ export async function run(options = {}) {
 
     (async () => {
         if (!argv.useSystemExecutable && !fs.existsSync(argv.pdftkJava)) {
-            console.log('It seems like you haven\'t downloaded the pdftk-all.jar file,\nplease download it from https://gitlab.com/pdftk-java/pdftk\nunder section "Pre-built binaries" > "Standalone jar"\n\nand then please place it in the same directory as this script.\nIf you\'d like to use the system\'s pdftk, use the option --useSystemExecutable\n\nMore options available with the --help flag.');
+            console.error('pdftk-all.jar non trovato.\nAssicurati che il file esista in ./pdftk-all.jar oppure usa --useSystemExecutable con pdftk installato nel sistema.');
+            process.exitCode = 1;
             return;
         }
 

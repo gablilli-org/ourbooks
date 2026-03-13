@@ -48,6 +48,7 @@ export default function handler(req, res) {
   let outputFile = null;
   let stderrBuf  = "";
   let stdoutBuf  = "";
+  let stdoutAll  = "";
 
   const proc = spawn("node", args, {
     cwd: PROJECT_ROOT,
@@ -60,6 +61,7 @@ export default function handler(req, res) {
 
   proc.stdout.on("data", (chunk) => {
     const text = chunk.toString();
+    stdoutAll += text;
     stdoutBuf += text;
 
     // Parse per-line to handle multiple messages in one chunk.
@@ -96,7 +98,7 @@ export default function handler(req, res) {
 
     if (code !== 0 || !outputFile) {
       cleanup(outputDir);
-      const msg = (stderrBuf.trim() || stdoutBuf.trim()) || `Il provider è terminato con codice ${code}`;
+      const msg = (stderrBuf.trim() || stdoutAll.trim() || stdoutBuf.trim()) || `Il provider è terminato con codice ${code}`;
       res.status(500).json({ error: msg });
       return;
     }
