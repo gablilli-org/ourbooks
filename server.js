@@ -35,9 +35,10 @@ const PROVIDERS = {
     label: 'HubScuola',
     emoji: '📘',
     fields: [
+      { name: 'username', label: 'Email account', type: 'text', required: true, placeholder: 'user@email.com' },
+      { name: 'password', label: 'Password', type: 'password', required: true, placeholder: '••••••••' },
       { name: 'platform', label: 'Piattaforma', type: 'select', required: true, options: ['hubyoung', 'hubkids'] },
-      { name: 'volumeId', label: 'Volume ID', type: 'text', required: true, placeholder: 'Es: 12345' },
-      { name: 'token', label: 'Token sessione', type: 'text', required: true, placeholder: 'Token-Session' },
+      { name: 'volumeId', label: 'Libro', type: 'select', required: true, dynamicOptions: true },
       { name: 'file', label: 'Nome file output', type: 'text', required: false, placeholder: 'libro.pdf' },
     ]
   },
@@ -65,7 +66,9 @@ const PROVIDERS = {
     emoji: '📔',
     fields: [
       { name: 'site', label: 'Sito', type: 'select', required: true, options: ['bsmart', 'digibook24'] },
-      { name: 'cookie', label: 'Cookie _bsw_session_v1_production', type: 'text', required: true, placeholder: 'Incolla il cookie qui' },
+      { name: 'username', label: 'Username (Email)', type: 'text', required: true, placeholder: 'Email' },
+      { name: 'password', label: 'Password', type: 'password', required: true, placeholder: '••••••••' },
+      { name: 'cookie', label: 'Cookie V1 (Opzionale, sostituisce Auth)', type: 'text', required: false, placeholder: '' },
       { name: 'bookId', label: 'Book ID', type: 'text', required: false, placeholder: 'Es: 123456' },
       { name: 'output', label: 'Nome file output', type: 'text', required: false, placeholder: 'libro.pdf' },
     ]
@@ -236,6 +239,51 @@ app.post('/api/sanoma-gedi', async (req, res) => {
   }
 });
 
+app.post('/api/hubscuola-books', async (req, res) => {
+  const { username, password, platform } = req.body || {};
+
+  if (!username || !password || !platform) {
+    res.status(400).json({ error: 'Campi richiesti: username, password, platform' });
+    return;
+  }
+
+  try {
+    const { tokenId, normalizedPlatform } = await hubscuolaInternalLogin({ username, password, platform });
+
+    const booksRes = await fetch(
+      `https://ms-api.hubscuola.it/getLibrary/${normalizedPlatform}?version=7.6&platform=web&app=v2`,
+      {
+        headers: {
+          'Token-Session': tokenId,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    const booksJson = await booksRes.json().catch(() => []);
+
+    if (!booksRes.ok) {
+      const msg = booksJson?.message || booksJson?.error || `Errore libreria HubScuola (${booksRes.status})`;
+      res.status(booksRes.status).json({ error: msg });
+      return;
+    }
+
+    const rawBooks = Array.isArray(booksJson) ? booksJson : (booksJson?.data || []);
+    const books = rawBooks
+      .filter((b) => b && (b.id || b.volumeId))
+      .map((b) => ({
+        volumeId: String(b.id || b.volumeId),
+        title: b.title || b.name || `Libro ${b.id || b.volumeId}`,
+        subtitle: b.subtitle || '',
+        editor: b.editor || ''
+      }));
+
+    res.status(200).json({ tokenId, books });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const activeProcesses = new Map();
 
 wss.on('connection', (ws) => {
@@ -269,6 +317,7 @@ wss.on('connection', (ws) => {
       }
 
       const args = ['cli.js', '--provider', provider];
+
 
       // In container/cloud we prefer system pdftk over bundled jar for Laterza.
       if (provider === 'dibooklaterza') {
