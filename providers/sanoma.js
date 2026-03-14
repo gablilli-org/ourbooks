@@ -90,7 +90,7 @@ export async function run(options = {}) {
     let bookGedi = gedi || argv.gedi;
 
     if (!userId) userId = prompt("Enter account email: ");
-    if (!userPassword) userPassword = prompt("Enter account password: ");
+    if (!userPassword) userPassword = prompt("Enter account password: ", { echo: '*' });
 
     function promisify(api) {
     return function (...args) {
@@ -190,7 +190,7 @@ export async function run(options = {}) {
         console.log('Warning: this script might log you out of other devices');
 
         while (!id) id = prompt('Enter account email: ');
-        while (!password) password = prompt('Enter account password: ');
+        while (!password) password = prompt('Enter account password: ', { echo: '*' });
 
         let userAuth = await fetchSanomaJson('/login', {
         method: 'POST',
