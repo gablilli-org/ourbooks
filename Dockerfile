@@ -10,6 +10,8 @@ RUN apt-get update \
     g++ \
     openjdk-17-jre-headless \
     pdftk-java \
+    inkscape \
+    fonts-liberation \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 

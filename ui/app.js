@@ -92,6 +92,14 @@ function selectProvider(id) {
     setupHubscuolaBookLoader();
   }
 
+  if (id === 'zanichelli') {
+    setupZanichelliBookLoader();
+  }
+
+  if (id === 'bsmart') {
+    setupBsmartBookLoader();
+  }
+
   /* show form, hide welcome */
   welcomeState.classList.add('hidden');
   downloadForm.classList.remove('hidden');
@@ -392,6 +400,174 @@ function setupHubscuolaBookLoader() {
   });
 
   syncHubBooks();
+}
+
+/* ─── Zanichelli books loader ─── */
+let zanSyncTimer = null;
+let zanLastCredentialsKey = '';
+let zanSyncRequestId = 0;
+function setupZanichelliBookLoader() {
+  clearTimeout(zanSyncTimer);
+
+  const usernameField = document.getElementById('field-username');
+  const passwordField = document.getElementById('field-password');
+  const isbnField = document.getElementById('field-isbn');
+
+  if (!usernameField || !passwordField || !isbnField) return;
+
+  async function syncZanBooks() {
+    clearTimeout(zanSyncTimer);
+
+    const username = usernameField.value?.trim();
+    const password = passwordField.value?.trim();
+
+    if (!username || !password) {
+      zanLastCredentialsKey = '';
+      isbnField.innerHTML = '<option value="">Inserisci email e password</option>';
+      isbnField.disabled = true;
+      return;
+    }
+
+    const credentialsKey = `${username}::${password}`;
+    if (credentialsKey === zanLastCredentialsKey) return;
+
+    zanLastCredentialsKey = credentialsKey;
+    const requestId = ++zanSyncRequestId;
+
+    isbnField.innerHTML = '<option value="">Caricamento libri...</option>';
+    isbnField.disabled = true;
+
+    try {
+      const res = await fetch('/api/zanichelli-books', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+
+      const data = await res.json();
+      if (requestId !== zanSyncRequestId) return;
+
+      if (!res.ok) {
+        isbnField.innerHTML = `<option value="">${data.error || 'Errore di caricamento'}</option>`;
+        return;
+      }
+
+      if (!Array.isArray(data.books) || data.books.length === 0) {
+        isbnField.innerHTML = '<option value="">Nessun libro trovato</option>';
+        return;
+      }
+
+      isbnField.innerHTML = '<option value="">Seleziona un libro</option>';
+      for (const book of data.books) {
+        const opt = document.createElement('option');
+        opt.value = book.isbn;
+        opt.textContent = `${book.title} (${book.isbn})`;
+        isbnField.appendChild(opt);
+      }
+      isbnField.disabled = false;
+    } catch (err) {
+      if (requestId !== zanSyncRequestId) return;
+      isbnField.innerHTML = `<option value="">Errore: ${err.message}</option>`;
+    }
+  }
+
+  usernameField.addEventListener('input', () => {
+    clearTimeout(zanSyncTimer);
+    zanSyncTimer = setTimeout(syncZanBooks, 450);
+  });
+  passwordField.addEventListener('input', () => {
+    clearTimeout(zanSyncTimer);
+    zanSyncTimer = setTimeout(syncZanBooks, 450);
+  });
+
+  syncZanBooks();
+}
+
+/* ─── Bsmart books loader ─── */
+let bsmartSyncTimer = null;
+let bsmartLastCredentialsKey = '';
+let bsmartSyncRequestId = 0;
+function setupBsmartBookLoader() {
+  clearTimeout(bsmartSyncTimer);
+
+  const siteField = document.getElementById('field-site');
+  const usernameField = document.getElementById('field-username');
+  const passwordField = document.getElementById('field-password');
+  const bookIdField = document.getElementById('field-bookId');
+
+  if (!siteField || !usernameField || !passwordField || !bookIdField) return;
+
+  async function syncBsmartBooks() {
+    clearTimeout(bsmartSyncTimer);
+
+    const site = siteField.value?.trim();
+    const username = usernameField.value?.trim();
+    const password = passwordField.value?.trim();
+
+    if (!site || !username || !password) {
+      bsmartLastCredentialsKey = '';
+      bookIdField.innerHTML = '<option value="">Inserisci sito, email e password</option>';
+      bookIdField.disabled = true;
+      return;
+    }
+
+    const credentialsKey = `${site}::${username}::${password}`;
+    if (credentialsKey === bsmartLastCredentialsKey) return;
+
+    bsmartLastCredentialsKey = credentialsKey;
+    const requestId = ++bsmartSyncRequestId;
+
+    bookIdField.innerHTML = '<option value="">Caricamento libri...</option>';
+    bookIdField.disabled = true;
+
+    try {
+      const res = await fetch('/api/bsmart-books', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ site, username, password })
+      });
+
+      const data = await res.json();
+      if (requestId !== bsmartSyncRequestId) return;
+
+      if (!res.ok) {
+        bookIdField.innerHTML = `<option value="">${data.error || 'Errore di caricamento'}</option>`;
+        return;
+      }
+
+      if (!Array.isArray(data.books) || data.books.length === 0) {
+        bookIdField.innerHTML = '<option value="">Nessun libro trovato</option>';
+        return;
+      }
+
+      bookIdField.innerHTML = '<option value="">Seleziona un libro</option>';
+      for (const book of data.books) {
+        const opt = document.createElement('option');
+        opt.value = book.bookId;
+        opt.textContent = `${book.title} (${book.bookId})`;
+        bookIdField.appendChild(opt);
+      }
+      bookIdField.disabled = false;
+    } catch (err) {
+      if (requestId !== bsmartSyncRequestId) return;
+      bookIdField.innerHTML = `<option value="">Errore: ${err.message}</option>`;
+    }
+  }
+
+  siteField.addEventListener('change', () => {
+    clearTimeout(bsmartSyncTimer);
+    bsmartSyncTimer = setTimeout(syncBsmartBooks, 150);
+  });
+  usernameField.addEventListener('input', () => {
+    clearTimeout(bsmartSyncTimer);
+    bsmartSyncTimer = setTimeout(syncBsmartBooks, 450);
+  });
+  passwordField.addEventListener('input', () => {
+    clearTimeout(bsmartSyncTimer);
+    bsmartSyncTimer = setTimeout(syncBsmartBooks, 450);
+  });
+
+  syncBsmartBooks();
 }
 
 /* ─── WebSocket ─── */

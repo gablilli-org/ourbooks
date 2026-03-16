@@ -465,7 +465,7 @@ export async function run(options = {}) {
 
     const outputPdf = await PDFDocument.create();
     const filenames = [];
-    const outputname = runtime.output || sanitize(`${book.id} - ${book.title}`);
+    const outputname = runtime.output || path.join(process.env.OURBOOKS_OUTPUT_DIR || '.', sanitize(`${book.id} - ${book.title}`));
 
     let assets = info
         .flatMap(resource =>
@@ -587,6 +587,7 @@ export async function run(options = {}) {
         }
 
         console.log('Done');
+        console.log(`OURBOOKS_OUTPUT:${outputname}.pdf`);
         return;
     }
 
