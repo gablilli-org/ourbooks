@@ -3,8 +3,6 @@ import PromptSync from 'prompt-sync';
 import fetch from 'node-fetch';
 import yauzl from 'yauzl';
 import { PDFDocument } from 'pdf-lib';
-import PDFKit from 'pdfkit';
-import SVGtoPDF from 'svg-to-pdfkit';
 import fs from 'fs';
 import fsExtra from 'fs-extra';
 import path from 'path';
@@ -327,12 +325,8 @@ export async function run(options = {}) {
     try {
       await convertPageWithInkscape(input, output);
     } catch (err) {
-      if (err?.code !== 'ENOENT' && !String(err?.message || '').includes('inkscape non trovato')) {
+      console.error('Inkscape fallito:', err.message);
       throw err;
-      }
-
-      console.warn('inkscape non trovato, uso fallback PDFKit per la conversione SVG.');
-      await convertPageWithPdfKit(input, output);
     }
     }
 
@@ -342,59 +336,5 @@ export async function run(options = {}) {
       convert.on('error', reject);
       convert.on('close', code => code === 0 ? resolve() : reject(new Error(`Inkscape exited with code ${code}`)));
     });
-    }
-
-    async function convertPageWithPdfKit(input, output) {
-    let svg = await fs.promises.readFile(input, 'utf8');
-    const svgDir = path.resolve(path.dirname(input));
-
-    // Resolve relative image paths to absolute so PDFKit can find them
-    svg = svg.replace(
-      /((?:xlink:)?href)=(["'])(?!https?:\/\/|data:|(?:\/))([^"']+)\2/g,
-      (_, attr, quote, relativePath) => {
-        const abs = path.join(svgDir, relativePath);
-        return `${attr}=${quote}${abs}${quote}`;
-      }
-    );
-
-    const size = extractSvgSize(svg);
-
-    await new Promise((resolve, reject) => {
-      const stream = fs.createWriteStream(output);
-      const doc = new PDFKit({ autoFirstPage: false, margin: 0 });
-
-      stream.on('finish', resolve);
-      stream.on('error', reject);
-      doc.on('error', reject);
-
-      doc.pipe(stream);
-      doc.addPage({ size: [size.width, size.height], margin: 0 });
-      SVGtoPDF(doc, svg, 0, 0, {
-      width: size.width,
-      height: size.height,
-      assumePt: true,
-      preserveAspectRatio: 'xMinYMin meet',
-      });
-      doc.end();
-    });
-    }
-
-    function extractSvgSize(svg) {
-    const viewBox = svg.match(/viewBox=["']([^"']+)["']/i);
-    if (viewBox) {
-      const nums = viewBox[1].trim().split(/[\s,]+/).map(Number);
-      if (nums.length === 4 && Number.isFinite(nums[2]) && Number.isFinite(nums[3])) {
-      return { width: Math.max(1, nums[2]), height: Math.max(1, nums[3]) };
-      }
-    }
-
-    const widthMatch = svg.match(/width=["']([\d.]+)(?:px)?["']/i);
-    const heightMatch = svg.match(/height=["']([\d.]+)(?:px)?["']/i);
-    const width = widthMatch ? Number(widthMatch[1]) : 595;
-    const height = heightMatch ? Number(heightMatch[1]) : 842;
-    return {
-      width: Number.isFinite(width) && width > 0 ? width : 595,
-      height: Number.isFinite(height) && height > 0 ? height : 842,
-    };
     }
 }

@@ -597,7 +597,7 @@ export async function run(options = {}) {
 	console.log("Available books:");
 	console.table(books, ['title']);
 
-	let isbn = argv.isbn;
+	let isbn = options.isbn || argv.isbn;
 
 	while (!isbn)
 		isbn = prompt("ISBN: ");
