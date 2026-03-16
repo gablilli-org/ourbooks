@@ -344,28 +344,141 @@ async function hubscuolaInternalLogin({ username, password, platform }) {
     "Origin": appOrigin,
     "Referer": `${appOrigin}/`,
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:148.0) Gecko/20100101 Firefox/148.0",
+    "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Sec-GPC": "1",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "Connection": "keep-alive",
+    "TE": "trailers",
   };
 
-  const accessPayload = {
-    host: `${normalizedPlatform}.hubscuola.it`,
-    loginToken,
-    hubEncryptedUser,
-    sessionId: loginSessionId,
-  };
-
-  const internalRes = await fetch("https://ms-api.hubscuola.it/internalLogin", {
-    method: "POST",
-    headers: internalHeaders,
-    body: JSON.stringify(accessPayload),
-  });
-
-  const internalJson = await readJsonLoose(internalRes);
-
-  if (!internalRes.ok) {
-    throw new Error(internalJson?.message || internalJson?.error || `internalLogin failed (${internalRes.status})`);
+  function decodeJwtPayload(token) {
+    try {
+      const part = token.split(".")[1];
+      if (!part) return {};
+      const normalized = part.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+      return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+    } catch {
+      return {};
+    }
   }
 
-  const tokenId = internalJson?.tokenId;
+  const decodedUser = hubEncryptedUser ? decodeJwtPayload(hubEncryptedUser) : {};
+  const decodedLoginToken = decodeJwtPayload(loginToken);
+
+  const resolvedUsername =
+    decodedLoginToken?.username
+    || decodedUser?.username
+    || username;
+
+  const resolvedSessionId =
+    loginSessionId
+    || decodedLoginToken?.sessionId
+    || "";
+
+  if (!resolvedSessionId) {
+    throw new Error("sessionId non presente nella risposta hubLoginJsonp");
+  }
+
+  const resolvedEmail =
+    decodedLoginToken?.email
+    || decodedUser?.email
+    || username;
+
+  const resolvedFirstName =
+    decodedLoginToken?.nome
+    || decodedUser?.firstName
+    || decodedUser?.name
+    || "";
+
+  const resolvedLastName =
+    decodedLoginToken?.cognome
+    || decodedUser?.lastName
+    || decodedUser?.surname
+    || "";
+
+  const resolvedType =
+    decodedLoginToken?.tipoUtente
+    || decodedUser?.type
+    || "studente";
+
+  const resolvedUserId =
+    String(decodedLoginToken?.idUtente || decodedUser?.id || decodedUser?.userId || "");
+
+  const internalPayloadPrimary = {
+    jwt: hubEncryptedUser,
+    sessionId: resolvedSessionId,
+    userData: decodedUser,
+    app: {
+      name: normalizedPlatform === "kids" ? "HUB Kids" : "HUB Young",
+      type: normalizedPlatform,
+      version: "7.6",
+    },
+    browser: {
+      major: "148",
+      name: "Firefox",
+      version: "148.0",
+      platform: "web",
+    },
+    so: {
+      name: "Mac OS",
+      version: "10.15",
+    },
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:148.0) Gecko/20100101 Firefox/148.0",
+    username: resolvedUsername,
+  };
+
+  const internalPayloadLegacy = {
+    username: resolvedUsername,
+    email: resolvedEmail,
+    type: resolvedType,
+    firstName: resolvedFirstName,
+    lastName: resolvedLastName,
+    tokenId: loginToken,
+    appData: {
+      name: normalizedPlatform === "kids" ? "Hub Kids" : "Hub Young",
+      id: normalizedPlatform,
+      version: "7.6",
+    },
+    id: resolvedUserId,
+    role: decodedUser?.role || "user",
+  };
+
+  async function doInternalLogin(payload) {
+    const res = await fetch("https://ms-api.hubscuola.it/user/internalLogin", {
+      method: "POST",
+      headers: internalHeaders,
+      body: JSON.stringify(payload),
+    });
+    const json = await readJsonLoose(res);
+    return { res, json };
+  }
+
+  let { res: internalRes, json: internalJson } = await doInternalLogin(internalPayloadPrimary);
+
+  if (!internalRes.ok) {
+    ({ res: internalRes, json: internalJson } = await doInternalLogin(internalPayloadLegacy));
+  }
+
+  if (!internalRes.ok) {
+    const msg = internalJson?.message || internalJson?.error || internalJson?.response || `internalLogin failed (${internalRes.status})`;
+    console.error("[internalLogin] errore", {
+      status: internalRes.status,
+      statusText: internalRes.statusText,
+      platform: normalizedPlatform,
+      username,
+      resolvedUsername,
+      resolvedSessionIdPreview: resolvedSessionId ? `${resolvedSessionId.slice(0, 12)}...` : "",
+      jwtPreview: loginToken ? `${loginToken.slice(0, 16)}...` : "",
+      loginSessionIdPreview: loginSessionId ? `${String(loginSessionId).slice(0, 12)}...` : "",
+      sentPayload: JSON.stringify(internalPayloadPrimary),
+    });
+    throw new Error(msg);
+  }
+
+  const tokenId = internalJson?.tokenId || internalJson?.data?.tokenId || internalJson?.session?.tokenId || internalJson?.response?.tokenId;
   if (!tokenId) {
     throw new Error("tokenId non presente nella risposta internalLogin");
   }
