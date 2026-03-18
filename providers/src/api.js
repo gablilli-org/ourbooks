@@ -10,7 +10,7 @@ import fetch from 'node-fetch';
 export async function performBsmartLogin(baseSite, username, password) {
     const initRes = await fetch(`https://${baseSite}/users/sign_in`);
     const initHtml = await initRes.text();
-    const cookieHeaders = initRes.headers.raw()['set-cookie'] || [];
+    const cookieHeaders = (initRes.headers.raw ? initRes.headers.raw()['set-cookie'] : initRes.headers.getSetCookie()) || [];
     let initialCookie = '';
     for (const c of cookieHeaders) {
         if (c.includes('_bsw_session_v1_production')) {
@@ -46,7 +46,7 @@ export async function performBsmartLogin(baseSite, username, password) {
         redirect: 'manual'
     });
 
-    const loginCookies = loginRes.headers.raw()['set-cookie'] || [];
+    const loginCookies = (loginRes.headers.raw ? loginRes.headers.raw()['set-cookie'] : loginRes.headers.getSetCookie()) || [];
     let finalCookie = initialCookie;
     for (const c of loginCookies) {
         if (c.includes('_bsw_session_v1_production')) {

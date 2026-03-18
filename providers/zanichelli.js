@@ -126,7 +126,8 @@ async function downloadKitabooBook(bookReaderUrl, doOcr, outputDir) {
 
 	let downloadBook = await downloadBookRequest.json();
 
-	let readerCookies = downloadBookRequest.headers.raw()['set-cookie'].map((cookie) => cookie.split(';')[0]).join('; ');
+	let rawCookies = downloadBookRequest.headers.raw ? downloadBookRequest.headers.raw()['set-cookie'] : downloadBookRequest.headers.getSetCookie();
+	let readerCookies = (rawCookies || []).map((cookie) => cookie.split(';')[0]).join('; ');
 
 	let rawPrivateKey = downloadBook.privateKey;
 	let jwtToken = downloadBook.jwtToken; // note how jwt = json web token, so what you are saying is json web token token... gg
@@ -609,7 +610,10 @@ export async function run(options = {}) {
 
 	let loginCookies = await fetch("https://my.zanichelli.it/?loginMode=myZanichelli", {
 		headers: { cookie },
-	}).then((res) => res.headers.raw()['set-cookie'].map((cookie) => cookie.split(';')[0])).catch((err) => {
+	}).then((res) => {
+		const rawCookies = res.headers.raw ? res.headers.raw()['set-cookie'] : res.headers.getSetCookie();
+		return (rawCookies || []).map((cookie) => cookie.split(';')[0]);
+	}).catch((err) => {
 		console.log("Error: ", err);
 		process.exit(1);
 	});

@@ -364,6 +364,12 @@ export async function run(options = {}) {
       type: "boolean",
       default: false
     })
+    .option("annotations", {
+      alias: "a",
+      description: "Download and draw annotations on the PDF",
+      type: "boolean",
+      default: false
+    })
     .help()
     .alias("help", "h").argv;
 
@@ -507,12 +513,23 @@ export async function run(options = {}) {
   const tempPdfPath = `./temp/${title.replace(/[^a-z0-9]/gi, '_')}_temp.pdf`;
   await merger.save(tempPdfPath);
 
-  console.log("Loading PDF for annotations...");
-  const baseBytes = await fs.readFile(tempPdfPath);
-  const pdfDoc = await PDFDocument.load(baseBytes);
-  const pages = pdfDoc.getPages();
+  const outputDir = process.env.OURBOOKS_OUTPUT_DIR || ".";
+  const baseName = (options.file || argv.file || `${title.replace(/[^a-z0-9]/gi, '_')}.pdf`);
+  const outputPath = path.join(outputDir, baseName);
+  await fsExtra.ensureDir(outputDir);
 
-  console.log("Fetching publication metadata...");
+  const wantAnnotations = options.annotations || argv.annotations;
+
+  if (!wantAnnotations) {
+    console.log("Skipping annotations. Copying PDF...");
+    await fs.copyFile(tempPdfPath, outputPath);
+  } else {
+    console.log("Loading PDF for annotations...");
+    const baseBytes = await fs.readFile(tempPdfPath);
+    const pdfDoc = await PDFDocument.load(baseBytes);
+    const pages = pdfDoc.getPages();
+
+    console.log("Fetching publication metadata...");
   const pubRes = await fetch(
     `https://ms-api.hubscuola.it/me${normalizedPlatform}/publication/${volumeId}`,
     {
@@ -653,10 +670,6 @@ export async function run(options = {}) {
       const b = parseInt(colorHex.slice(5, 7), 16) / 255;
 
       for (const line of data.lines?.points || []) {
-        if (line.length > 0) {
-          const [rx, ry] = line[0];
-          console.log(`  raw point: (${rx}, ${ry}) -> scaled: (${(rx * scaleX).toFixed(2)}, ${(pdfHeight - ry * scaleY).toFixed(2)}) [pdfHeight=${pdfHeight.toFixed(2)}]`);
-        }
         for (let i = 0; i < line.length - 1; i++) {
           const [x1, y1] = line[i];
           const [x2, y2] = line[i + 1];
@@ -675,14 +688,11 @@ export async function run(options = {}) {
     }
   }
 
-  console.log(`Total annotations applied: ${totalInks}`);
-  console.log("Saving final PDF with annotations...");
-  const finalBytes = await pdfDoc.save();
-  const outputDir = process.env.OURBOOKS_OUTPUT_DIR || ".";
-  const baseName = (options.file || argv.file || `${title.replace(/[^a-z0-9]/gi, '_')}.pdf`);
-  const outputPath = path.join(outputDir, baseName);
-  await fsExtra.ensureDir(outputDir);
-  await fs.writeFile(outputPath, finalBytes);
+    console.log(`Total annotations applied: ${totalInks}`);
+    console.log("Saving final PDF with annotations...");
+    const finalBytes = await pdfDoc.save();
+    await fs.writeFile(outputPath, finalBytes);
+  }
 
   if (!argv.noCleanUp) fsExtra.removeSync("temp");
 

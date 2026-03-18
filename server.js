@@ -41,6 +41,7 @@ const PROVIDERS = {
       { name: 'platform', label: 'Piattaforma', type: 'select', required: true, options: ['hubyoung', 'hubkids'] },
       { name: 'volumeId', label: 'Libro', type: 'select', required: true, dynamicOptions: true },
       { name: 'file', label: 'Nome file output', type: 'text', required: false, placeholder: 'libro.pdf' },
+      { name: 'annotations', label: 'Scarica e integra Annotazioni', type: 'checkbox', required: false },
     ]
   },
   dibooklaterza: {
@@ -70,6 +71,7 @@ const PROVIDERS = {
       { name: 'username', label: 'Email account', type: 'text', required: true, placeholder: 'user@email.com' },
       { name: 'password', label: 'Password', type: 'password', required: true, placeholder: '••••••••' },
       { name: 'bookId', label: 'Libro', type: 'select', required: true, placeholder: 'Seleziona un libro', dynamicOptions: true },
+      { name: 'annotations', label: 'Scarica e integra Annotazioni', type: 'checkbox', required: false },
     ]
   }
 };
@@ -587,7 +589,7 @@ app.post('/api/zanichelli-books', async (req, res) => {
       headers: { cookie },
     });
     
-    const setCookieHeader = myZanichelliRes.headers.raw()['set-cookie'] || [];
+    const setCookieHeader = (myZanichelliRes.headers.raw ? myZanichelliRes.headers.raw()['set-cookie'] : myZanichelliRes.headers.getSetCookie()) || [];
     const loginCookies = setCookieHeader.map(c => c.split(';')[0]);
     const dashboardCookies = {};
     for (let c of loginCookies) {
@@ -689,7 +691,11 @@ wss.on('connection', (ws) => {
 
       for (const [key, value] of Object.entries(safeOptions)) {
         if (value !== '') {
-          args.push(`--${key}`, value);
+          if (value === 'on') {
+            args.push(`--${key}`);
+          } else {
+            args.push(`--${key}`, value);
+          }
         }
       }
 
