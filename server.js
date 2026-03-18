@@ -614,9 +614,9 @@ app.post('/api/zanichelli-books', async (req, res) => {
         break;
       }
       const pData = await r.json();
-      if (pData.data.pagination.pages == 0) break;
+      if (!pData.data || pData.data.pagination.pages == 0) break;
 
-      for (let license of pData.data.licenses) {
+      for (let license of pData.data.licenses || []) {
         if (license.volume.ereader_url == '') continue;
         returnBooks.push({
             isbn: license.volume.isbn,
@@ -633,7 +633,7 @@ app.post('/api/zanichelli-books', async (req, res) => {
       });
       if (request.ok) {
           const resData = await request.json();
-          for (let license of resData.data.licenses) {
+          for (let license of resData.realLicenses || []) {
             if (license.volume.ereader_url == '') continue;
             returnBooks.push({
                 isbn: license.volume.isbn,

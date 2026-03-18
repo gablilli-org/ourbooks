@@ -660,11 +660,11 @@ export async function run(options = {}) {
 			break;
 		}
 		response = await response.json();
-		if (response.data.pagination.pages == 0) {
+		if (!response.data || response.data.pagination.pages == 0) {
 			console.log("No books found");
 			process.exit(0);
 		}
-		for (let license of response.data.licenses) {
+		for (let license of response.data.licenses || []) {
 			if (license.volume.ereader_url == '') continue;
 			books[license.volume.isbn] = {
 				title: license.volume.opera.title,
@@ -683,7 +683,7 @@ export async function run(options = {}) {
 			console.log("Error: ", err);
 			process.exit(1);
 		});
-		for (let license of request.realLicenses) {
+		for (let license of (request.realLicenses || [])) {
 			if (license.volume.ereader_url == '') continue;
 			books[license.volume.isbn] = {
 				title: license.volume.opera.title,
