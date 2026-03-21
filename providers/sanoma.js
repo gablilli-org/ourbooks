@@ -367,3 +367,41 @@ export async function run(options = {}) {
     });
   }
 }
+
+export async function login(username, password) {
+  try {
+    const skClient = await loginSanoma(username, password);
+    return { id: username, password };
+  } catch (err) {
+    throw new Error('SvelteKit Auth failed: ' + err.message);
+  }
+}
+
+export async function getBooks(session) {
+  const { id, password } = session;
+  const skClient = await loginSanoma(id, password);
+  const rawBooks = await fetchBooks(skClient);
+
+  const booksMap = new Map();
+
+  for (const b of rawBooks) {
+    const rootName = b.products[0]?.name.split(' - ')[0] || 'Unknown Root';
+    const operaId = b.opera_id;
+    
+    if (!booksMap.has(operaId)) {
+        booksMap.set(operaId, {
+            id: operaId,
+            name: rootName,
+            products: []
+        });
+    }
+
+    const prod = b.products[0];
+    booksMap.get(operaId).products.push({
+        id: prod.gedi,
+        name: prod.name
+    });
+  }
+
+  return Array.from(booksMap.values());
+}
