@@ -8,6 +8,7 @@ import fsExtra from 'fs-extra';
 import path from 'path';
 import { spawn } from 'child_process';
 import { pipeline } from 'stream';
+import { loginSanoma, fetchBooks } from './src/sanoma/auth.js';
 
 const prompt = PromptSync({ sigint: true });
 const SANOMA_BASE_URLS = [
@@ -77,20 +78,17 @@ export async function run(options = {}) {
 
   console.log("Avvio provider Sanoma...");
 
-    const sessionTmp = process.env.OURBOOKS_SESSION_TMP || 'tmp';
-    const outputDir = process.env.OURBOOKS_OUTPUT_DIR || '.';
-    const doOcr = (ocr || argv.ocr) === 'on';
+  const sessionTmp = process.env.OURBOOKS_SESSION_TMP || 'tmp';
+  const outputDir = process.env.OURBOOKS_OUTPUT_DIR || '.';
+  const doOcr = (ocr || argv.ocr) === 'on';
 
-    await fsExtra.ensureDir(sessionTmp);
+  await fsExtra.ensureDir(sessionTmp);
 
-    let userId = id || argv.id;
-    let userPassword = password || argv.password;
-    let bookGedi = gedi || argv.gedi;
+  let userId = id || argv.id;
+  let userPassword = password || argv.password;
+  let bookGedi = gedi || argv.gedi;
 
-    if (!userId) userId = prompt("Enter account email: ");
-    if (!userPassword) userPassword = prompt("Enter account password: ", { echo: '*' });
-
-    function promisify(api) {
+  function promisify(api) {
     return function (...args) {
         return new Promise((resolve, reject) => {
         api(...args, (err, response) => {
@@ -99,11 +97,11 @@ export async function run(options = {}) {
         });
         });
     };
-    }
+  }
 
-    const yauzlFromFile = promisify(yauzl.open);
+  const yauzlFromFile = promisify(yauzl.open);
 
-    function runOCR(inputPdf, outputPdf) {
+  function runOCR(inputPdf, outputPdf) {
     return new Promise((resolve, reject) => {
         const ocr = spawn('ocrmypdf', [inputPdf, outputPdf], { stdio: 'inherit' });
 
@@ -120,9 +118,9 @@ export async function run(options = {}) {
       else reject(new Error(`OCRmyPDF exited with code ${code}`));
         });
     });
-    }
+  }
 
-    async function fetchSanomaJson(pathname, init = {}) {
+  async function fetchSanomaJson(pathname, init = {}) {
     let lastError = null;
 
     for (const base of SANOMA_BASE_URLS) {
@@ -141,17 +139,17 @@ export async function run(options = {}) {
     }
 
     throw lastError || new Error('Richiesta Sanoma fallita');
-    }
+  }
 
-    function getAccessToken(userAuth) {
+  function getAccessToken(userAuth) {
     return userAuth?.result?.data?.access_token
       || userAuth?.data?.access_token
       || userAuth?.access_token
       || userAuth?.token
       || null;
-    }
+  }
 
-    function getBooksPage(payload) {
+  function getBooksPage(payload) {
     const data = payload?.result?.data || payload?.data || payload?.books || [];
     const totalSize = payload?.result?.total_size ?? payload?.total_size ?? payload?.total ?? data.length;
     const rawPageSize = payload?.result?.page_size ?? payload?.page_size ?? data.length;
@@ -160,20 +158,20 @@ export async function run(options = {}) {
       data: Array.isArray(data) ? data : [],
       pages: Math.max(1, Math.ceil(totalSize / pageSize)),
     };
-    }
+  }
 
-    function getBookName(book) {
+  function getBookName(book) {
     return book?.name || book?.title || `GEDI ${book?.gedi || ''}`.trim();
-    }
+  }
 
-    function getBookDownloadUrl(book) {
+  function getBookDownloadUrl(book) {
     return book?.url_download || book?.urlDownload || book?.downloadUrl || book?.url || null;
-    }
+  }
 
-    (async () => {
+  (async () => {
     await fsExtra.ensureDir(sessionTmp);
 
-    let book;
+    let targetBookName = "Sanoma Book";
 
     if (argv.download) {
         let folder = await fs.promises.readdir(sessionTmp);
@@ -182,18 +180,43 @@ export async function run(options = {}) {
         process.exit(1);
         }
 
-        let id = userId;
-        let password = userPassword;
+        let loginId = userId;
+        let loginPassword = userPassword;
 
         console.log('Warning: this script might log you out of other devices');
 
-        while (!id) id = prompt('Enter account email: ');
-        while (!password) password = prompt('Enter account password: ', { echo: '*' });
+        while (!loginId) loginId = prompt('Enter account email: ');
+        while (!loginPassword) loginPassword = prompt('Enter account password: ', { echo: '*' });
 
+        console.log('Logging in to MyPlace to retrieve books...');
+        const skClient = await loginSanoma(loginId, loginPassword).catch(err => {
+            console.error('Failed to log in via MyPlace:', err.message);
+            process.exit(1);
+        });
+
+        console.log('Fetching book list...');
+        const skBooks = await fetchBooks(skClient);
+
+        let tableObj = {};
+        for (const b of skBooks) {
+           for (const p of b.products) {
+              tableObj[p.gedi] = p.name;
+           }
+        }
+        
+        console.log('Books (MyPlace graph):');
+        console.table(tableObj);
+
+        let gedi = bookGedi;
+        while (!gedi) gedi = prompt('Enter the book\'s gedi: ');
+
+        targetBookName = tableObj[gedi] || `GEDI ${gedi}`;
+
+        console.log('Logging in to offline API to retrieve download URL...');
         let userAuth = await fetchSanomaJson('/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Timezone-Offset': '+0200' },
-        body: JSON.stringify({ id, password }),
+        body: JSON.stringify({ id: loginId, password: loginPassword }),
         }).catch((err) => { console.error('Failed to log in:', err.message); process.exit(1); });
 
         if (!userAuth || (userAuth.code != null && userAuth.code !== 0)) {
@@ -207,8 +230,8 @@ export async function run(options = {}) {
         process.exit(1);
         }
 
-        console.log('Fetching book list');
-        let books = {};
+        console.log('Searching for download bundle...');
+        let downloadUrl = null;
         let pages = 1;
         for (let i = 1; i <= pages; i++) {
         const newBooks = await fetchSanomaJson(`/books?app=true&page=${i}`, {
@@ -219,35 +242,41 @@ export async function run(options = {}) {
         pages = pageInfo.pages;
 
         for (const item of pageInfo.data) {
-          if (!item?.gedi) continue;
-          books[item.gedi] = item;
+          if (item?.gedi == gedi) {
+            downloadUrl = getBookDownloadUrl(item);
+            break;
+          }
         }
-        }
-
-        console.log('Books:');
-        console.table(Object.fromEntries(Object.entries(books).map(([bookId, book]) => [bookId, getBookName(book)])));
-
-        let gedi = bookGedi;
-        while (!gedi) gedi = prompt('Enter the book\'s gedi: ');
-
-        book = books[gedi];
-        if (!book) {
-        console.error(`GEDI non trovato: ${gedi}`);
-        process.exit(1);
+        if (downloadUrl) break;
         }
 
-        const downloadUrl = getBookDownloadUrl(book);
         if (!downloadUrl) {
-        console.error('URL download non trovato nel payload del libro.');
+        console.error(`URL download non trovato per questo GEDI (${gedi}) nella offline API. Errore bundle non disponibile.`);
         process.exit(1);
         }
 
-        console.log('Downloading "' + getBookName(book) + '"');
+        console.log('Downloading "' + targetBookName + '"');
 
         let zip = await fetch(downloadUrl);
         if (!zip.ok) { console.error('Failed to download zip'); process.exit(1); }
 
+        const totalBytes = parseInt(zip.headers.get('content-length'), 10);
+        let downloadedBytes = 0;
+        let lastLoggedPercent = 0;
+
+        zip.body.on('data', (chunk) => {
+            downloadedBytes += chunk.length;
+            if (totalBytes) {
+                const percent = Math.floor((downloadedBytes / totalBytes) * 100);
+                if (percent >= lastLoggedPercent + 10) {
+                    process.stdout.write(`...${percent}%`);
+                    lastLoggedPercent = percent;
+                }
+            }
+        });
+
         await promisify(pipeline)(zip.body, fs.createWriteStream(sessionTmp + '/book.zip'));
+        console.log('\nDownload completato!');
     } else {
         console.log('Skipping download');
         let stats = await fs.promises.stat(sessionTmp + '/book.zip');
@@ -290,7 +319,7 @@ export async function run(options = {}) {
         }
 
         let baseName = argv.output || options.output;
-        if (argv.download && !baseName) baseName = getBookName(book).replace(/[\\/:*?"<>|]/g, '') + '.pdf';
+        if (argv.download && !baseName) baseName = targetBookName.replace(/[\\/:*?"<>|]/g, '') + '.pdf';
         else if (!baseName) baseName = 'output.pdf';
         const outFilePath = path.join(outputDir, baseName);
 
@@ -319,22 +348,22 @@ export async function run(options = {}) {
         console.log('Done. Output:', finalOutput);
         console.log(`OURBOOKS_OUTPUT:${finalOutput}`);
     });
-    })();
+  })();
 
-    async function convertPage(input, output) {
+  async function convertPage(input, output) {
     try {
       await convertPageWithInkscape(input, output);
     } catch (err) {
       console.error('Inkscape fallito:', err.message);
       throw err;
     }
-    }
+  }
 
-    async function convertPageWithInkscape(input, output) {
+  async function convertPageWithInkscape(input, output) {
     return new Promise((resolve, reject) => {
       const convert = spawn('inkscape', ['--export-filename=' + output, input]);
       convert.on('error', reject);
       convert.on('close', code => code === 0 ? resolve() : reject(new Error(`Inkscape exited with code ${code}`)));
     });
-    }
+  }
 }

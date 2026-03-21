@@ -10,8 +10,8 @@ import { spawn } from 'child_process';
 import path from 'path';
 import pLimit from 'p-limit';
 
-import { fetchEncryptionKey, decryptFile } from './src/crypto.js';
-import { performBsmartLogin, getUserInfo, getBooks, getBookInfo, getBookResources, getResourceLinks } from './src/api.js';
+import { fetchEncryptionKey, decryptFile } from './src/bsmart/crypto.js';
+import { performBsmartLogin, getUserInfo, getBooks, getBookInfo, getBookResources, getResourceLinks } from './src/bsmart/api.js';
 
 const prompt = PromptSync({ sigint: true });
 

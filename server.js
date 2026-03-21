@@ -6,7 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
-import { performBsmartLogin, getBooks, getUserInfo } from './providers/src/api.js';
+import { performBsmartLogin, getBooks, getUserInfo } from './providers/src/bsmart/api.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
