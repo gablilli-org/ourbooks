@@ -1,407 +1,509 @@
-import yargs from 'yargs';
-import PromptSync from 'prompt-sync';
-import fetch from 'node-fetch';
-import yauzl from 'yauzl';
-import { PDFDocument } from 'pdf-lib';
-import fs from 'fs';
-import fsExtra from 'fs-extra';
-import path from 'path';
-import { spawn } from 'child_process';
-import { pipeline } from 'stream';
-import { loginSanoma, fetchBooks } from './src/sanoma/auth.js';
+import axios from 'axios';
+import { wrapper } from 'axios-cookiejar-support';
+import { CookieJar } from 'tough-cookie';
+import * as cheerio from 'cheerio';
+import { URL } from 'url';
 
-const prompt = PromptSync({ sigint: true });
-const SANOMA_BASE_URLS = [
-  process.env.SANOMA_API_BASE,
-  'https://npmoffline.sanoma.it/mcs/api/v1',
-  'https://npmoffline.sanoma.it/api/v1',
-].filter(Boolean);
+const PLACE_BOOKS_DATA_URL = 'https://place.sanoma.it/prodotti_digitali/__data.json';
+const PLACE_BOOKS_PAGE_URL = 'https://place.sanoma.it/prodotti_digitali';
+const DISPLAY_BOOKS_URL = 'https://npmitaly-pro-apidistribucion.sanoma.it/mcs/msproducts/api/products/display-books';
+const EBOOK_ORIGIN = 'https://ebook.sanoma.it';
+const DEFAULT_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7'
+};
 
-export async function run(options = {}) {
-  const argv = yargs(process.argv.slice(2))
-    .option('id', {
-      alias: 'i',
-      type: 'string',
-      description: 'user id (email)',
-    })
-    .option('password', {
-      alias: 'p',
-      type: 'string',
-      description: 'user password',
-    })
-    .option('gedi', {
-      alias: 'g',
-      type: 'string',
-      description: 'book\'s gedi',
-    })
-    .option('output', {
-      alias: 'o',
-      type: 'string',
-      description: 'Output file',
-    })
-    .option('download', {
-      type: 'boolean',
-      description: 'Download the book',
-      default: true,
-      hidden: true,
-    })
-    .option('no-download', {
-      type: 'boolean',
-      description: 'Skip downloading the book and try to extract the zip file that is already in the temp folder',
-      default: false,
-    })
-    .option('clean', {
-      type: 'boolean',
-      description: 'Clean up the temp folder after finishing',
-      default: true,
-      hidden: true,
-    })
-    .option('no-clean', {
-      type: 'boolean',
-      description: 'Don\'t clean up the temp folder after finishing',
-      default: false,
-    })
-    .option('ocr', {
-      type: 'string',
-      description: 'Run OCR on output (on/off)',
-      default: null,
-    })
-    .help()
-    .argv;
-
-  const {
-    id,
-    password,
-    gedi,
-    ocr,
-  } = options;
-
-  console.log("Avvio provider Sanoma...");
-
-  const sessionTmp = process.env.OURBOOKS_SESSION_TMP || 'tmp';
-  const outputDir = process.env.OURBOOKS_OUTPUT_DIR || '.';
-  const doOcr = (ocr || argv.ocr) === 'on';
-
-  await fsExtra.ensureDir(sessionTmp);
-
-  let userId = id || argv.id;
-  let userPassword = password || argv.password;
-  let bookGedi = gedi || argv.gedi;
-
-  function promisify(api) {
-    return function (...args) {
-        return new Promise((resolve, reject) => {
-        api(...args, (err, response) => {
-            if (err) return reject(err);
-            resolve(response);
-        });
-        });
-    };
-  }
-
-  const yauzlFromFile = promisify(yauzl.open);
-
-  function runOCR(inputPdf, outputPdf) {
-    return new Promise((resolve, reject) => {
-        const ocr = spawn('ocrmypdf', [inputPdf, outputPdf], { stdio: 'inherit' });
-
-      ocr.on('error', (err) => {
-      if (err.code === 'ENOENT') {
-        reject(new Error('ocrmypdf non trovato. Installa ocrmypdf oppure usa il PDF senza OCR.'));
-        return;
-      }
-      reject(err);
-      });
-
-        ocr.on('close', (code) => {
-        if (code === 0) resolve();
-      else reject(new Error(`OCRmyPDF exited with code ${code}`));
-        });
-    });
-  }
-
-  async function fetchSanomaJson(pathname, init = {}) {
-    let lastError = null;
-
-    for (const base of SANOMA_BASE_URLS) {
-      const url = `${base}${pathname}`;
-      try {
-      const res = await fetch(url, init);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const message = data?.message || data?.error || `HTTP ${res.status}`;
-        throw new Error(`${url}: ${message}`);
-      }
-      return data;
-      } catch (err) {
-      lastError = err;
-      }
-    }
-
-    throw lastError || new Error('Richiesta Sanoma fallita');
-  }
-
-  function getAccessToken(userAuth) {
-    return userAuth?.result?.data?.access_token
-      || userAuth?.data?.access_token
-      || userAuth?.access_token
-      || userAuth?.token
-      || null;
-  }
-
-  function getBooksPage(payload) {
-    const data = payload?.result?.data || payload?.data || payload?.books || [];
-    const totalSize = payload?.result?.total_size ?? payload?.total_size ?? payload?.total ?? data.length;
-    const rawPageSize = payload?.result?.page_size ?? payload?.page_size ?? data.length;
-    const pageSize = rawPageSize || 1;
-    return {
-      data: Array.isArray(data) ? data : [],
-      pages: Math.max(1, Math.ceil(totalSize / pageSize)),
-    };
-  }
-
-  function getBookName(book) {
-    return book?.name || book?.title || `GEDI ${book?.gedi || ''}`.trim();
-  }
-
-  function getBookDownloadUrl(book) {
-    return book?.url_download || book?.urlDownload || book?.downloadUrl || book?.url || null;
-  }
-
-  (async () => {
-    await fsExtra.ensureDir(sessionTmp);
-
-    let targetBookName = "Sanoma Book";
-
-    if (argv.download) {
-        let folder = await fs.promises.readdir(sessionTmp);
-        if (folder.length > 0) {
-        console.log('Temp folder is not empty, delete tmp folder to download the book');
-        process.exit(1);
+export async function loginSanoma(email, password) {
+    const jar = new CookieJar();
+    const client = wrapper(axios.create({ 
+        jar,
+        withCredentials: true,
+        maxRedirects: 0,
+        validateStatus: (status) => status >= 200 && status < 400,
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7'
         }
-
-        let loginId = userId;
-        let loginPassword = userPassword;
-
-        console.log('Warning: this script might log you out of other devices');
-
-        while (!loginId) loginId = prompt('Enter account email: ');
-        while (!loginPassword) loginPassword = prompt('Enter account password: ', { echo: '*' });
-
-        console.log('Logging in to MyPlace to retrieve books...');
-        const skClient = await loginSanoma(loginId, loginPassword).catch(err => {
-            console.error('Failed to log in via MyPlace:', err.message);
-            process.exit(1);
+    }));
+    
+    const redirectUri = 'https://place.sanoma.it/';
+    let authUrl = null;
+    let clientId = null;
+    
+    try {
+        await client.get('https://place.sanoma.it/login', {
+            headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }
         });
 
-        console.log('Fetching book list...');
-        const skBooks = await fetchBooks(skClient);
+        const initParams = new URLSearchParams({
+            ref: 'https://place.sanoma.it/',
+            context: '',
+            text: email
+        });
 
-        let tableObj = {};
-        for (const b of skBooks) {
-           for (const p of b.products) {
-              tableObj[p.gedi] = p.name;
-           }
-        }
-        
-        console.log('Books (MyPlace graph):');
-        console.table(tableObj);
-
-        let gedi = bookGedi;
-        while (!gedi) gedi = prompt('Enter the book\'s gedi: ');
-
-        targetBookName = tableObj[gedi] || `GEDI ${gedi}`;
-
-        console.log('Logging in to offline API to retrieve download URL...');
-        let userAuth = await fetchSanomaJson('/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Timezone-Offset': '+0200' },
-        body: JSON.stringify({ id: loginId, password: loginPassword }),
-        }).catch((err) => { console.error('Failed to log in:', err.message); process.exit(1); });
-
-        if (!userAuth || (userAuth.code != null && userAuth.code !== 0)) {
-        console.error('Failed to log in', userAuth?.message || 'Unknown error');
-        process.exit(1);
-        }
-
-        const accessToken = getAccessToken(userAuth);
-        if (!accessToken) {
-        console.error('Login riuscito ma token accesso non trovato nella risposta API.');
-        process.exit(1);
-        }
-
-        console.log('Searching for download bundle...');
-        let downloadUrl = null;
-        let pages = 1;
-        for (let i = 1; i <= pages; i++) {
-        const newBooks = await fetchSanomaJson(`/books?app=true&page=${i}`, {
-          headers: { 'X-Auth-Token': 'Bearer ' + accessToken },
-        }).catch((err) => { console.error('Errore recupero libri:', err.message); process.exit(1); });
-
-        const pageInfo = getBooksPage(newBooks);
-        pages = pageInfo.pages;
-
-        for (const item of pageInfo.data) {
-          if (item?.gedi == gedi) {
-            downloadUrl = getBookDownloadUrl(item);
-            break;
-          }
-        }
-        if (downloadUrl) break;
-        }
-
-        if (!downloadUrl) {
-        console.error(`URL download non trovato per questo GEDI (${gedi}) nella offline API. Errore bundle non disponibile.`);
-        process.exit(1);
-        }
-
-        console.log('Downloading "' + targetBookName + '"');
-
-        let zip = await fetch(downloadUrl);
-        if (!zip.ok) { console.error('Failed to download zip'); process.exit(1); }
-
-        const totalBytes = parseInt(zip.headers.get('content-length'), 10);
-        let downloadedBytes = 0;
-        let lastLoggedPercent = 0;
-
-        zip.body.on('data', (chunk) => {
-            downloadedBytes += chunk.length;
-            if (totalBytes) {
-                const percent = Math.floor((downloadedBytes / totalBytes) * 100);
-                if (percent >= lastLoggedPercent + 10) {
-                    process.stdout.write(`...${percent}%`);
-                    lastLoggedPercent = percent;
-                }
+        const initRes = await client.post('https://place.sanoma.it/login?/status', initParams.toString(), {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json',
+                'Origin': 'https://place.sanoma.it',
+                'Referer': 'https://place.sanoma.it/login',
+                'x-sveltekit-action': 'true'
             }
         });
-
-        await promisify(pipeline)(zip.body, fs.createWriteStream(sessionTmp + '/book.zip'));
-        console.log('\nDownload completato!');
-    } else {
-        console.log('Skipping download');
-        let stats = await fs.promises.stat(sessionTmp + '/book.zip');
-        if (!stats.isFile()) { console.error('No zip file found in tmp'); process.exit(1); }
-    }
-
-    console.log('Extracting zip');
-
-    let zipFile = await yauzlFromFile(sessionTmp + '/book.zip');
-    let openReadStream = promisify(zipFile.openReadStream.bind(zipFile));
-
-    zipFile.on('entry', async (entry) => {
-        if (!entry.fileName.startsWith("pages") || entry.fileName.endsWith('/')) return;
-        let filePath = entry.fileName.slice(5);
-        let folder = path.dirname(filePath);
-        await fsExtra.ensureDir(`${sessionTmp}/pages/${folder}`);
-        let page = await openReadStream(entry);
-        let file = fs.createWriteStream(`${sessionTmp}/pages/${filePath}`);
-        page.pipe(file);
-    });
-
-    zipFile.on('end', async () => {
-        await fs.promises.mkdir(sessionTmp + '/output', { recursive: true });
-        let folders = (await fs.promises.readdir(sessionTmp + '/pages')).filter(file => /^\d+$/g.test(file));
-        let total = folders.length;
-
-        for (let i = 0; i < total; i++) {
-        console.log('Converting page ' + (i + 1) + ' of ' + total);
-        await convertPage(`${sessionTmp}/pages/${i+1}/${i+1}.svg`, `${sessionTmp}/output/${i+1}.pdf`);
+        
+        let data = initRes.data;
+        if (typeof data === 'string') {
+            try { data = JSON.parse(data); } catch (e) {}
         }
-
-        console.log('Merging pages');
-
-        let pdf = await PDFDocument.create();
-        for (let i = 0; i < total; i++) {
-        let file = await fs.promises.readFile(`${sessionTmp}/output/${i+1}.pdf`);
-        let page = await PDFDocument.load(file);
-        let [copiedPage] = await pdf.copyPages(page, [0]);
-        pdf.addPage(copiedPage);
+        
+        if (data && data.type === 'redirect' && data.location) {
+            authUrl = data.location;
         }
-
-        let baseName = argv.output || options.output;
-        if (argv.download && !baseName) baseName = targetBookName.replace(/[\\/:*?"<>|]/g, '') + '.pdf';
-        else if (!baseName) baseName = 'output.pdf';
-        const outFilePath = path.join(outputDir, baseName);
-
-        console.log('Saving PDF (image only)...');
-        await fs.promises.writeFile(outFilePath, await pdf.save());
-
-        let finalOutput = outFilePath;
-        if (doOcr) {
-        console.log('Running OCR to make text selectable...');
-        const ocrPath = path.join(outputDir, 'ocr_' + baseName);
-        try {
-          await runOCR(outFilePath, ocrPath);
-          finalOutput = ocrPath;
-        } catch (ocrError) {
-          console.warn('OCR saltato:', ocrError.message);
-        }
-        }
-
-        if (argv.clean) {
-        console.log('Cleaning up');
-        await fsExtra.remove(sessionTmp);
-        } else {
-        console.log('Skipping clean up, delete tmp when done');
-        }
-
-        console.log('Done. Output:', finalOutput);
-        console.log(`OURBOOKS_OUTPUT:${finalOutput}`);
-    });
-  })();
-
-  async function convertPage(input, output) {
-    try {
-      await convertPageWithInkscape(input, output);
     } catch (err) {
-      console.error('Inkscape fallito:', err.message);
-      throw err;
+        if (err.response?.data?.type === 'redirect' && err.response?.data?.location) {
+            authUrl = err.response.data.location;
+        } else if (err.response?.headers?.location) {
+            authUrl = err.response.headers.location;
+        } else {
+            throw err;
+        }
     }
-  }
-
-  async function convertPageWithInkscape(input, output) {
-    return new Promise((resolve, reject) => {
-      const convert = spawn('inkscape', ['--export-filename=' + output, input]);
-      convert.on('error', reject);
-      convert.on('close', code => code === 0 ? resolve() : reject(new Error(`Inkscape exited with code ${code}`)));
-    });
-  }
-}
-
-export async function login(username, password) {
-  try {
-    const skClient = await loginSanoma(username, password);
-    return { id: username, password };
-  } catch (err) {
-    throw new Error('SvelteKit Auth failed: ' + err.message);
-  }
-}
-
-export async function getBooks(session) {
-  const { id, password } = session;
-  const skClient = await loginSanoma(id, password);
-  const rawBooks = await fetchBooks(skClient);
-
-  const booksMap = new Map();
-
-  for (const b of rawBooks) {
-    const rootName = b.products[0]?.name.split(' - ')[0] || 'Unknown Root';
-    const operaId = b.opera_id;
     
-    if (!booksMap.has(operaId)) {
-        booksMap.set(operaId, {
-            id: operaId,
-            name: rootName,
-            products: []
+    if (!authUrl) throw new Error('Failed to get Auth0 redirect URL from /login?/status');
+    if (!authUrl.startsWith('http')) authUrl = 'https://login.sanoma.it' + (authUrl.startsWith('/') ? '' : '/') + authUrl;
+    
+    const parsedInitUrl = new URL(authUrl);
+    clientId = parsedInitUrl.searchParams.get('client_id');
+    if (!clientId) throw new Error('Client ID missing from SvelteKit authorization URL');
+
+    let authPageRes = await client.get(authUrl, {
+        headers: {
+            'Referer': 'https://place.sanoma.it/',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }
+    });
+    
+    while (authPageRes.status >= 300 && authPageRes.status < 400 && authPageRes.headers.location) {
+        let nextUrl = authPageRes.headers.location;
+        if (!nextUrl.startsWith('http')) nextUrl = 'https://login.sanoma.it' + nextUrl;
+        authUrl = nextUrl;
+        authPageRes = await client.get(authUrl, {
+            headers: {
+                'Referer': 'https://place.sanoma.it/',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            }
         });
     }
+    
+    const $ = cheerio.load(authPageRes.data);
+    const cookies = await jar.getCookies('https://login.sanoma.it');
+    const csrfCookie = cookies.find(c => c.key === '_csrf');
+    const csrfToken = $('input[name="_csrf"]').val() || (csrfCookie ? csrfCookie.value : '');
+    
+    const parsedUrl = new URL(authUrl);
+    const state = parsedUrl.searchParams.get('state');
+    if (!state) throw new Error('State parameter not found in Auth0 URL');
 
-    const prod = b.products[0];
-    booksMap.get(operaId).products.push({
-        id: prod.gedi,
-        name: prod.name
-    });
+    const loginPayload = {
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        tenant: "sanoma-italy",
+        response_type: "code",
+        scope: "openid profile email",
+        state,
+        connection: "Sanoma-Italy-Database",
+        username: email,
+        password,
+        popup_options: {},
+        sso: true,
+        protocol: "oauth2",
+        _csrf: csrfToken,
+        _intstate: "deprecated"
+    };
+
+    let loginRes;
+    try {
+        loginRes = await client.post('https://login.sanoma.it/usernamepassword/login', loginPayload, {
+            headers: {
+                'Content-Type': 'application/json',
+                'Origin': 'https://login.sanoma.it',
+                'Referer': authUrl,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            }
+        });
+    } catch (err) {
+        throw new Error(`Login failed: ${err.response?.status ?? 'Unknown'} ${err.response?.statusText ?? ''}`);
+    }
+
+    const $login = cheerio.load(loginRes.data);
+    const wa      = $login('input[name="wa"]').val();
+    const wresult = $login('input[name="wresult"]').val();
+    const wctx    = $login('input[name="wctx"]').val();
+
+    if (!wa || !wresult || !wctx) {
+        throw new Error('Login failed: callback form not found (wrong credentials?)');
+    }
+
+    let finalCodeUrl = null;
+    try {
+        const callbackRes = await client.post(
+            'https://login.sanoma.it/login/callback',
+            `wa=${encodeURIComponent(wa)}&wresult=${encodeURIComponent(wresult)}&wctx=${encodeURIComponent(wctx)}`,
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Origin': 'https://login.sanoma.it',
+                    'Referer': 'https://login.sanoma.it/',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+            }
+        );
+        if (callbackRes.status >= 300 && callbackRes.status < 400) {
+            finalCodeUrl = callbackRes.headers.location;
+        }
+    } catch(err) {
+        if (err.response?.status >= 300 && err.response?.status < 400) {
+            finalCodeUrl = err.response.headers.location;
+        } else {
+            throw err;
+        }
+    }
+
+    if (!finalCodeUrl) throw new Error('Final redirect URL not found after callback');
+
+    if (!finalCodeUrl.startsWith('http')) {
+        finalCodeUrl = finalCodeUrl.startsWith('/authorize')
+            ? 'https://login.sanoma.it' + finalCodeUrl
+            : 'https://place.sanoma.it' + (finalCodeUrl.startsWith('/') ? '' : '/') + finalCodeUrl;
+    }
+    
+    let currentUrl = finalCodeUrl;
+    for (let i = 0; i < 15; i++) {
+        try {
+            const res = await client.get(currentUrl, {
+                headers: {
+                    'Referer': i === 0 ? 'https://login.sanoma.it/' : currentUrl,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+            });
+            if (res.status >= 300 && res.status < 400 && res.headers.location) {
+                let next = res.headers.location;
+                if (!next.startsWith('http')) next = next.startsWith('/authorize') ? 'https://login.sanoma.it' + next : 'https://place.sanoma.it' + next;
+                currentUrl = next;
+            } else {
+                break;
+            }
+        } catch (err) {
+            if (err.response?.status >= 300 && err.response?.status < 400) {
+                let next = err.response.headers.location;
+                if (!next.startsWith('http')) next = next.startsWith('/authorize') ? 'https://login.sanoma.it' + next : 'https://place.sanoma.it' + next;
+                currentUrl = next;
+            } else {
+                break;
+            }
+        }
+    }
+
+    return client;
+}
+
+export async function fetchBooks(client) {
+  const response = await client.get(PLACE_BOOKS_DATA_URL, {
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Referer': PLACE_BOOKS_PAGE_URL,
+      'Accept': 'application/json',
+      'X-Sveltekit-Invalidated': '01'
+    }
+  });
+
+  const lines = response.data.split('\n').filter(line => line.trim());
+  const jsonObjects = lines.map(line => JSON.parse(line));
+
+  let allData = [];
+  
+  jsonObjects.forEach(obj => {
+    if (obj.data && Array.isArray(obj.data)) {
+        for (let i = 0; i < obj.data.length; i++) {
+            if (obj.data[i] !== undefined) allData[i] = obj.data[i];
+        }
+    }
+    if (obj.nodes) {
+      obj.nodes.forEach(node => {
+        if (node && Array.isArray(node.data)) {
+          for (let i = 0; i < node.data.length; i++) {
+              if (node.data[i] !== undefined) allData[i] = node.data[i];
+          }
+        }
+      });
+    }
+  });
+
+  jsonObjects.filter(obj => obj.type === 'chunk' && obj.data).forEach(chunk => {
+    let chunkData = chunk.data;
+    if (Array.isArray(chunkData[0])) chunkData = chunkData[0];
+    for (let i = 0; i < chunkData.length; i++) {
+        if (chunkData[i] !== undefined) allData[i] = chunkData[i];
+    }
+  });
+  
+  const books = [];
+  const seenOperas = new Set();
+  const resolved = new Map();
+
+  function decompressValue(val) {
+      if (typeof val === 'number') {
+          if (val < 0 || val >= allData.length || allData[val] === undefined) return val;
+          if (resolved.has(val)) return resolved.get(val);
+          const target = allData[val];
+          if (Array.isArray(target)) {
+              const newArr = [];
+              resolved.set(val, newArr);
+              for (let j = 0; j < target.length; j++) newArr.push(decompressValue(target[j]));
+              return newArr;
+          } else if (target && typeof target === 'object') {
+              const newObj = {};
+              resolved.set(val, newObj);
+              for (const key in target) newObj[key] = decompressValue(target[key]);
+              return newObj;
+          } else {
+              resolved.set(val, target);
+              return target;
+          }
+      }
+      return val;
   }
 
-  return Array.from(booksMap.values());
+  for (let i = 0; i < allData.length; i++) {
+    const item = allData[i];
+    
+    if (item && typeof item === 'object' && !Array.isArray(item) && 'opera_id' in item && 'display_name' in item) {
+        const fullyResolved = decompressValue(i);
+        if (!fullyResolved || !fullyResolved.opera_id || seenOperas.has(fullyResolved.opera_id)) continue;
+        seenOperas.add(fullyResolved.opera_id);
+        
+        const productsMap = new Map();
+        const crawlVisited = new Set();
+        
+        function extractProducts(node, namePath, inheritedIsbn) {
+            if (!node || typeof node !== 'object') return;
+            if (crawlVisited.has(node)) return;
+            crawlVisited.add(node);
+            
+            let currentNames = [...namePath];
+            const potentialNames = [node.display_name, node.title, node.name, node.category_label, node.category_name];
+            
+            for (const n of potentialNames) {
+                const str = String(n || '').trim();
+                if (str && str !== 'Prodotti' && str !== 'null' && str !== 'undefined' && str !== '[object Object]' && !/^\d+$/.test(str)) {
+                    let isRedundant = false;
+                    for (let j = 0; j < currentNames.length; j++) {
+                        const existing = currentNames[j];
+                        if (existing.toLowerCase() === str.toLowerCase()) { isRedundant = true; break; }
+                        if (str.toLowerCase().includes(existing.toLowerCase()) && str.length > existing.length) { currentNames[j] = str; isRedundant = true; break; }
+                        if (existing.toLowerCase().includes(str.toLowerCase())) { isRedundant = true; break; }
+                    }
+                    if (!isRedundant) currentNames.push(str);
+                }
+            }
+            
+            const currentIsbn = node.isbn || node.paper_isbn || inheritedIsbn;
+            let gediCode = null;
+            if (node.external_id && /^\d{5,10}$/.test(String(node.external_id))) gediCode = String(node.external_id);
+            else if (node.id && /^\d{5,10}$/.test(String(node.id))) gediCode = String(node.id);
+            
+            if (gediCode) {
+                let finalParts = [];
+                for (let j = 0; j < currentNames.length; j++) {
+                    let isRedundant = false;
+                    let currFirstWord = currentNames[j].trim().split(/[\s\-_]+/)[0].toLowerCase();
+                    for (let k = j + 1; k < currentNames.length; k++) {
+                        let nextFirstWord = currentNames[k].trim().split(/[\s\-_]+/)[0].toLowerCase();
+                        if (currFirstWord && currFirstWord === nextFirstWord) { isRedundant = true; break; }
+                    }
+                    if (!isRedundant) finalParts.push(currentNames[j]);
+                }
+                let finalName = finalParts.join(' - ') || `Volume (${gediCode})`;
+                
+                if (!productsMap.has(gediCode)) {
+                    productsMap.set(gediCode, { isbn: currentIsbn || '', name: finalName, gedi: gediCode, resources: [] });
+                } else if (finalName.length > productsMap.get(gediCode).name.length) {
+                    productsMap.get(gediCode).name = finalName;
+                }
+                
+                productsMap.get(gediCode).resources.push({
+                    type: node.category_name || '',
+                    category_id: node.category_id || '',
+                    external_id: node.external_id || '',
+                    code: node.internal_code || '',
+                    url: node.url || ''
+                });
+            }
+            
+            if (Array.isArray(node)) {
+                for (let k = 0; k < node.length; k++) {
+                    if (typeof node[k] === 'object') extractProducts(node[k], currentNames, currentIsbn);
+                }
+            } else {
+                for (const key in node) {
+                    if (typeof node[key] === 'object') extractProducts(node[key], currentNames, currentIsbn);
+                }
+            }
+        }
+        
+        let initialPath = [];
+        if (fullyResolved.display_name) initialPath.push(fullyResolved.display_name);
+        extractProducts(fullyResolved.included || fullyResolved, initialPath, '');
+        
+        for (const product of productsMap.values()) {
+            books.push({ name: product.name, opera_id: fullyResolved.opera_id, products: [product] });
+        }
+    }
+  }
+
+  return books;
+}
+
+function normalizePlaceBookUrl(url) {
+    if (!url || typeof url !== 'string') return null;
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    if (url.startsWith('/')) return `https://place.sanoma.it${url}`;
+    return `https://place.sanoma.it/${url}`;
+}
+
+function getProductPlaceUrl(product) {
+    const candidates = [
+        product?.url,
+        ...(Array.isArray(product?.resources) ? product.resources.map((resource) => resource?.url) : [])
+    ];
+
+    for (const candidate of candidates) {
+        const normalized = normalizePlaceBookUrl(candidate);
+        if (normalized && normalized.includes('/prodotti_digitali/')) {
+            return normalized;
+        }
+    }
+
+    return null;
+}
+
+function getAllProducts(books) {
+    const products = [];
+    for (const book of books) {
+        for (const product of book.products || []) {
+            products.push(product);
+        }
+    }
+    return products;
+}
+
+export async function getBookCatalog(client) {
+    const books = await fetchBooks(client);
+    const products = getAllProducts(books);
+
+    return products.map((product) => ({
+        ...product,
+        placeUrl: getProductPlaceUrl(product)
+    }));
+}
+
+export async function getBookMetadata(client, gedi) {
+    const products = await getBookCatalog(client);
+    const product = products.find((entry) => String(entry.gedi) === String(gedi));
+
+    if (!product) {
+        throw new Error(`Libro con GEDI ${gedi} non trovato nella libreria Sanoma.`);
+    }
+
+    return product;
+}
+
+export async function fetchKToken(client, placeUrl) {
+    const normalizedPlaceUrl = normalizePlaceBookUrl(placeUrl);
+    if (!normalizedPlaceUrl) {
+        throw new Error('URL del libro Sanoma non valido o mancante.');
+    }
+
+    let response;
+    try {
+        response = await client.get(normalizedPlaceUrl, {
+            headers: {
+                ...DEFAULT_HEADERS,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Referer': PLACE_BOOKS_PAGE_URL
+            }
+        });
+    } catch (err) {
+        if (err.response) {
+            response = err.response;
+        } else {
+            throw err;
+        }
+    }
+
+    const location = response.headers?.location;
+    if (!location) {
+        throw new Error(`Redirect verso open-book non trovato per ${normalizedPlaceUrl}.`);
+    }
+
+    const redirectUrl = new URL(location, normalizedPlaceUrl);
+    const ktoken = redirectUrl.searchParams.get('ktoken');
+
+    if (!ktoken) {
+        throw new Error(`ktoken non trovato nel redirect di ${normalizedPlaceUrl}.`);
+    }
+
+    return ktoken;
+}
+
+export async function fetchBookAccess(client, gedi, placeUrl) {
+    const product = placeUrl
+        ? { gedi, placeUrl: normalizePlaceBookUrl(placeUrl) }
+        : await getBookMetadata(client, gedi);
+
+    if (!product.placeUrl) {
+        throw new Error(`URL place.sanoma.it non trovato per il libro GEDI ${gedi}.`);
+    }
+
+    const xAuthToken = await fetchKToken(client, product.placeUrl);
+    const response = await client.get(DISPLAY_BOOKS_URL, {
+        headers: {
+            ...DEFAULT_HEADERS,
+            'Accept': 'application/json, text/plain, */*',
+            'Referer': `${EBOOK_ORIGIN}/`,
+            'Origin': EBOOK_ORIGIN,
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'Sec-GPC': '1',
+            'TE': 'trailers',
+            'X-Auth-Token': xAuthToken
+        }
+    });
+
+    const payload = response.data;
+    const firstEntry = Array.isArray(payload?.data) ? payload.data[0] : null;
+    const bookData = firstEntry?.book || payload?.book || payload?.data?.book || null;
+    const resolvedGedi = firstEntry?.gedi || payload?.gedi || gedi;
+    const cookies = bookData?.cookies || {};
+
+    const cookieKeys = ['CloudFront-Policy', 'CloudFront-Signature', 'CloudFront-Key-Pair-Id'];
+    const missingKeys = cookieKeys.filter((key) => !cookies[key]);
+    if (!bookData?.url || missingKeys.length > 0) {
+        throw new Error(`Risposta display-books incompleta per GEDI ${gedi}.`);
+    }
+
+    return {
+        gedi: String(resolvedGedi),
+        placeUrl: product.placeUrl,
+        xAuthToken,
+        baseUrl: String(bookData.url).replace(/\/$/, ''),
+        cookies,
+        cookieHeader: cookieKeys.map((key) => `${key}=${cookies[key]}`).join('; ')
+    };
+}
+
+export async function fetchCloudfrontCookies(client, gedi, placeUrl) {
+    const access = await fetchBookAccess(client, gedi, placeUrl);
+    return access.cookieHeader;
 }
