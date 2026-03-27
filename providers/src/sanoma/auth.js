@@ -4,6 +4,15 @@ import { CookieJar } from 'tough-cookie';
 import * as cheerio from 'cheerio';
 import { URL } from 'url';
 
+const PLACE_BOOKS_DATA_URL = 'https://place.sanoma.it/prodotti_digitali/__data.json';
+const PLACE_BOOKS_PAGE_URL = 'https://place.sanoma.it/prodotti_digitali';
+const DISPLAY_BOOKS_URL = 'https://npmitaly-pro-apidistribucion.sanoma.it/mcs/msproducts/api/products/display-books';
+const EBOOK_ORIGIN = 'https://ebook.sanoma.it';
+const DEFAULT_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7'
+};
+
 export async function loginSanoma(email, password) {
     const jar = new CookieJar();
     const client = wrapper(axios.create({ 
@@ -22,11 +31,8 @@ export async function loginSanoma(email, password) {
     let clientId = null;
     
     try {
-        // init session cookies
         await client.get('https://place.sanoma.it/login', {
-            headers: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            }
+            headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }
         });
 
         const initParams = new URLSearchParams({
@@ -54,29 +60,21 @@ export async function loginSanoma(email, password) {
             authUrl = data.location;
         }
     } catch (err) {
-        if (err.response && err.response.data && err.response.data.type === 'redirect' && err.response.data.location) {
+        if (err.response?.data?.type === 'redirect' && err.response?.data?.location) {
             authUrl = err.response.data.location;
-        } else if (err.response && err.response.headers && err.response.headers.location) {
+        } else if (err.response?.headers?.location) {
             authUrl = err.response.headers.location;
         } else {
             throw err;
         }
     }
     
-    if (!authUrl) {
-        throw new Error('Failed to get Auth0 redirect URL from /login?/status');
-    }
-    
-    if (!authUrl.startsWith('http')) {
-        authUrl = 'https://login.sanoma.it' + (authUrl.startsWith('/') ? '' : '/') + authUrl;
-    }
+    if (!authUrl) throw new Error('Failed to get Auth0 redirect URL from /login?/status');
+    if (!authUrl.startsWith('http')) authUrl = 'https://login.sanoma.it' + (authUrl.startsWith('/') ? '' : '/') + authUrl;
     
     const parsedInitUrl = new URL(authUrl);
     clientId = parsedInitUrl.searchParams.get('client_id');
-
-    if (!clientId) {
-        throw new Error('Client ID missing from SvelteKit authorization URL');
-    }
+    if (!clientId) throw new Error('Client ID missing from SvelteKit authorization URL');
 
     let authPageRes = await client.get(authUrl, {
         headers: {
@@ -87,9 +85,7 @@ export async function loginSanoma(email, password) {
     
     while (authPageRes.status >= 300 && authPageRes.status < 400 && authPageRes.headers.location) {
         let nextUrl = authPageRes.headers.location;
-        if (!nextUrl.startsWith('http')) {
-            nextUrl = 'https://login.sanoma.it' + nextUrl;
-        }
+        if (!nextUrl.startsWith('http')) nextUrl = 'https://login.sanoma.it' + nextUrl;
         authUrl = nextUrl;
         authPageRes = await client.get(authUrl, {
             headers: {
@@ -100,17 +96,13 @@ export async function loginSanoma(email, password) {
     }
     
     const $ = cheerio.load(authPageRes.data);
-    
     const cookies = await jar.getCookies('https://login.sanoma.it');
     const csrfCookie = cookies.find(c => c.key === '_csrf');
     const csrfToken = $('input[name="_csrf"]').val() || (csrfCookie ? csrfCookie.value : '');
     
     const parsedUrl = new URL(authUrl);
     const state = parsedUrl.searchParams.get('state');
-    
-    if (!state) {
-        throw new Error('State parameter not found in Auth0 URL');
-    }
+    if (!state) throw new Error('State parameter not found in Auth0 URL');
 
     const loginPayload = {
         client_id: clientId,
@@ -118,10 +110,10 @@ export async function loginSanoma(email, password) {
         tenant: "sanoma-italy",
         response_type: "code",
         scope: "openid profile email",
-        state: state,
+        state,
         connection: "Sanoma-Italy-Database",
         username: email,
-        password: password,
+        password,
         popup_options: {},
         sso: true,
         protocol: "oauth2",
@@ -140,24 +132,23 @@ export async function loginSanoma(email, password) {
             }
         });
     } catch (err) {
-        throw new Error(`Login failed: ${err.response ? err.response.status : 'Unknown'} ${err.response ? err.response.statusText : ''}`);
+        throw new Error(`Login failed: ${err.response?.status ?? 'Unknown'} ${err.response?.statusText ?? ''}`);
     }
 
     const $login = cheerio.load(loginRes.data);
-    const wa = $login('input[name="wa"]').val();
+    const wa      = $login('input[name="wa"]').val();
     const wresult = $login('input[name="wresult"]').val();
-    const wctx = $login('input[name="wctx"]').val();
+    const wctx    = $login('input[name="wctx"]').val();
 
     if (!wa || !wresult || !wctx) {
-        console.error('Callback form fields not found');
         throw new Error('Login failed: callback form not found (wrong credentials?)');
     }
 
     let finalCodeUrl = null;
-    
     try {
-        const callbackRes = await client.post('https://login.sanoma.it/login/callback', 
-            `wa=${encodeURIComponent(wa)}&wresult=${encodeURIComponent(wresult)}&wctx=${encodeURIComponent(wctx)}`, 
+        const callbackRes = await client.post(
+            'https://login.sanoma.it/login/callback',
+            `wa=${encodeURIComponent(wa)}&wresult=${encodeURIComponent(wresult)}&wctx=${encodeURIComponent(wctx)}`,
             {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
@@ -167,73 +158,46 @@ export async function loginSanoma(email, password) {
                 }
             }
         );
-
         if (callbackRes.status >= 300 && callbackRes.status < 400) {
             finalCodeUrl = callbackRes.headers.location;
         }
     } catch(err) {
-        if (err.response && err.response.status >= 300 && err.response.status < 400) {
+        if (err.response?.status >= 300 && err.response?.status < 400) {
             finalCodeUrl = err.response.headers.location;
         } else {
             throw err;
         }
     }
 
-    if (!finalCodeUrl) {
-        throw new Error('Final redirect URL not found after callback');
-    }
+    if (!finalCodeUrl) throw new Error('Final redirect URL not found after callback');
 
     if (!finalCodeUrl.startsWith('http')) {
-        if (finalCodeUrl.startsWith('/authorize')) {
-            finalCodeUrl = 'https://login.sanoma.it' + finalCodeUrl;
-        } else {
-            finalCodeUrl = 'https://place.sanoma.it' + (finalCodeUrl.startsWith('/') ? '' : '/') + finalCodeUrl;
-        }
+        finalCodeUrl = finalCodeUrl.startsWith('/authorize')
+            ? 'https://login.sanoma.it' + finalCodeUrl
+            : 'https://place.sanoma.it' + (finalCodeUrl.startsWith('/') ? '' : '/') + finalCodeUrl;
     }
     
     let currentUrl = finalCodeUrl;
-    let redirectCount = 0;
-    const maxRedirects = 15;
-    
-    while (redirectCount < maxRedirects) {
+    for (let i = 0; i < 15; i++) {
         try {
             const res = await client.get(currentUrl, {
                 headers: {
-                    'Referer': redirectCount === 0 ? 'https://login.sanoma.it/' : currentUrl,
+                    'Referer': i === 0 ? 'https://login.sanoma.it/' : currentUrl,
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
                 }
             });
-            
             if (res.status >= 300 && res.status < 400 && res.headers.location) {
-                let nextUrl = res.headers.location;
-                
-                if (!nextUrl.startsWith('http')) {
-                    if (nextUrl.startsWith('/authorize')) {
-                        nextUrl = 'https://login.sanoma.it' + nextUrl;
-                    } else {
-                        nextUrl = 'https://place.sanoma.it' + (nextUrl.startsWith('/') ? '' : '/') + nextUrl;
-                    }
-                }
-                
-                currentUrl = nextUrl;
-                redirectCount++;
+                let next = res.headers.location;
+                if (!next.startsWith('http')) next = next.startsWith('/authorize') ? 'https://login.sanoma.it' + next : 'https://place.sanoma.it' + next;
+                currentUrl = next;
             } else {
                 break;
             }
         } catch (err) {
-            if (err.response && err.response.status >= 300 && err.response.status < 400) {
-                let nextUrl = err.response.headers.location;
-                
-                if (!nextUrl.startsWith('http')) {
-                    if (nextUrl.startsWith('/authorize')) {
-                        nextUrl = 'https://login.sanoma.it' + nextUrl;
-                    } else {
-                        nextUrl = 'https://place.sanoma.it' + (nextUrl.startsWith('/') ? '' : '/') + nextUrl;
-                    }
-                }
-                
-                currentUrl = nextUrl;
-                redirectCount++;
+            if (err.response?.status >= 300 && err.response?.status < 400) {
+                let next = err.response.headers.location;
+                if (!next.startsWith('http')) next = next.startsWith('/authorize') ? 'https://login.sanoma.it' + next : 'https://place.sanoma.it' + next;
+                currentUrl = next;
             } else {
                 break;
             }
@@ -244,9 +208,10 @@ export async function loginSanoma(email, password) {
 }
 
 export async function fetchBooks(client) {
-  const response = await client.get('https://place.sanoma.it/prodotti_digitali/__data.json', {
+  const response = await client.get(PLACE_BOOKS_DATA_URL, {
     headers: {
-      'Referer': 'https://place.sanoma.it/prodotti_digitali',
+      ...DEFAULT_HEADERS,
+      'Referer': PLACE_BOOKS_PAGE_URL,
       'Accept': 'application/json',
       'X-Sveltekit-Invalidated': '01'
     }
@@ -260,18 +225,14 @@ export async function fetchBooks(client) {
   jsonObjects.forEach(obj => {
     if (obj.data && Array.isArray(obj.data)) {
         for (let i = 0; i < obj.data.length; i++) {
-            if (obj.data[i] !== undefined) {
-                allData[i] = obj.data[i];
-            }
+            if (obj.data[i] !== undefined) allData[i] = obj.data[i];
         }
     }
     if (obj.nodes) {
       obj.nodes.forEach(node => {
         if (node && Array.isArray(node.data)) {
           for (let i = 0; i < node.data.length; i++) {
-              if (node.data[i] !== undefined) {
-                  allData[i] = node.data[i];
-              }
+              if (node.data[i] !== undefined) allData[i] = node.data[i];
           }
         }
       });
@@ -282,37 +243,28 @@ export async function fetchBooks(client) {
     let chunkData = chunk.data;
     if (Array.isArray(chunkData[0])) chunkData = chunkData[0];
     for (let i = 0; i < chunkData.length; i++) {
-        if (chunkData[i] !== undefined) {
-            allData[i] = chunkData[i];
-        }
+        if (chunkData[i] !== undefined) allData[i] = chunkData[i];
     }
   });
   
   const books = [];
   const seenOperas = new Set();
-  
-  // prevent ram out of limit (lol)
   const resolved = new Map();
 
   function decompressValue(val) {
       if (typeof val === 'number') {
           if (val < 0 || val >= allData.length || allData[val] === undefined) return val;
           if (resolved.has(val)) return resolved.get(val);
-
           const target = allData[val];
           if (Array.isArray(target)) {
               const newArr = [];
-              resolved.set(val, newArr); // register immediately before recurse
-              for (let j = 0; j < target.length; j++) {
-                  newArr.push(decompressValue(target[j]));
-              }
+              resolved.set(val, newArr);
+              for (let j = 0; j < target.length; j++) newArr.push(decompressValue(target[j]));
               return newArr;
           } else if (target && typeof target === 'object') {
               const newObj = {};
-              resolved.set(val, newObj); // register immediately before recurse
-              for (const key in target) {
-                  newObj[key] = decompressValue(target[key]);
-              }
+              resolved.set(val, newObj);
+              for (const key in target) newObj[key] = decompressValue(target[key]);
               return newObj;
           } else {
               resolved.set(val, target);
@@ -326,13 +278,8 @@ export async function fetchBooks(client) {
     const item = allData[i];
     
     if (item && typeof item === 'object' && !Array.isArray(item) && 'opera_id' in item && 'display_name' in item) {
-        
         const fullyResolved = decompressValue(i);
-        
-        if (!fullyResolved || !fullyResolved.opera_id || seenOperas.has(fullyResolved.opera_id)) {
-            continue;
-        }
-        
+        if (!fullyResolved || !fullyResolved.opera_id || seenOperas.has(fullyResolved.opera_id)) continue;
         seenOperas.add(fullyResolved.opera_id);
         
         const productsMap = new Map();
@@ -344,13 +291,7 @@ export async function fetchBooks(client) {
             crawlVisited.add(node);
             
             let currentNames = [...namePath];
-            const potentialNames = [
-                node.display_name,
-                node.title,
-                node.name,
-                node.category_label,
-                node.category_name
-            ];
+            const potentialNames = [node.display_name, node.title, node.name, node.category_label, node.category_name];
             
             for (const n of potentialNames) {
                 const str = String(n || '').trim();
@@ -358,70 +299,36 @@ export async function fetchBooks(client) {
                     let isRedundant = false;
                     for (let j = 0; j < currentNames.length; j++) {
                         const existing = currentNames[j];
-                        if (existing.toLowerCase() === str.toLowerCase()) {
-                            isRedundant = true; break;
-                        }
-                        if (str.toLowerCase().includes(existing.toLowerCase()) && str.length > existing.length) {
-                            currentNames[j] = str; 
-                            isRedundant = true; break;
-                        }
-                        if (existing.toLowerCase().includes(str.toLowerCase())) {
-                            isRedundant = true; break;
-                        }
+                        if (existing.toLowerCase() === str.toLowerCase()) { isRedundant = true; break; }
+                        if (str.toLowerCase().includes(existing.toLowerCase()) && str.length > existing.length) { currentNames[j] = str; isRedundant = true; break; }
+                        if (existing.toLowerCase().includes(str.toLowerCase())) { isRedundant = true; break; }
                     }
-                    if (!isRedundant) {
-                        currentNames.push(str);
-                    }
+                    if (!isRedundant) currentNames.push(str);
                 }
             }
             
             const currentIsbn = node.isbn || node.paper_isbn || inheritedIsbn;
-            
-            // search a gedi
             let gediCode = null;
-            if (node.external_id && /^\d{5,10}$/.test(String(node.external_id))) {
-                gediCode = String(node.external_id);
-            } else if (node.id && /^\d{5,10}$/.test(String(node.id))) {
-                gediCode = String(node.id);
-            }
+            if (node.external_id && /^\d{5,10}$/.test(String(node.external_id))) gediCode = String(node.external_id);
+            else if (node.id && /^\d{5,10}$/.test(String(node.id))) gediCode = String(node.id);
             
             if (gediCode) {
-                // clean names
                 let finalParts = [];
                 for (let j = 0; j < currentNames.length; j++) {
                     let isRedundant = false;
                     let currFirstWord = currentNames[j].trim().split(/[\s\-_]+/)[0].toLowerCase();
-                    
                     for (let k = j + 1; k < currentNames.length; k++) {
                         let nextFirstWord = currentNames[k].trim().split(/[\s\-_]+/)[0].toLowerCase();
-                        
-                        // redudant names
-                        if (currFirstWord && currFirstWord === nextFirstWord) {
-                            isRedundant = true;
-                            break;
-                        }
+                        if (currFirstWord && currFirstWord === nextFirstWord) { isRedundant = true; break; }
                     }
-                    if (!isRedundant) {
-                        finalParts.push(currentNames[j]);
-                    }
+                    if (!isRedundant) finalParts.push(currentNames[j]);
                 }
-                
-                let finalName = finalParts.join(' - ');
-                if (!finalName) {
-                    finalName = `Volume (${gediCode})`;
-                }
+                let finalName = finalParts.join(' - ') || `Volume (${gediCode})`;
                 
                 if (!productsMap.has(gediCode)) {
-                    productsMap.set(gediCode, {
-                        isbn: currentIsbn || '',
-                        name: finalName,
-                        gedi: gediCode,
-                        resources: []
-                    });
-                } else {
-                    if (finalName.length > productsMap.get(gediCode).name.length) {
-                        productsMap.get(gediCode).name = finalName;
-                    }
+                    productsMap.set(gediCode, { isbn: currentIsbn || '', name: finalName, gedi: gediCode, resources: [] });
+                } else if (finalName.length > productsMap.get(gediCode).name.length) {
+                    productsMap.get(gediCode).name = finalName;
                 }
                 
                 productsMap.get(gediCode).resources.push({
@@ -446,19 +353,157 @@ export async function fetchBooks(client) {
         
         let initialPath = [];
         if (fullyResolved.display_name) initialPath.push(fullyResolved.display_name);
-        
         extractProducts(fullyResolved.included || fullyResolved, initialPath, '');
         
-        // independent names
         for (const product of productsMap.values()) {
-            books.push({
-                name: product.name,
-                opera_id: fullyResolved.opera_id,
-                products: [product]
-            });
+            books.push({ name: product.name, opera_id: fullyResolved.opera_id, products: [product] });
         }
     }
   }
 
   return books;
+}
+
+function normalizePlaceBookUrl(url) {
+    if (!url || typeof url !== 'string') return null;
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    if (url.startsWith('/')) return `https://place.sanoma.it${url}`;
+    return `https://place.sanoma.it/${url}`;
+}
+
+function getProductPlaceUrl(product) {
+    const candidates = [
+        product?.url,
+        ...(Array.isArray(product?.resources) ? product.resources.map((resource) => resource?.url) : [])
+    ];
+
+    for (const candidate of candidates) {
+        const normalized = normalizePlaceBookUrl(candidate);
+        if (normalized && normalized.includes('/prodotti_digitali/')) {
+            return normalized;
+        }
+    }
+
+    return null;
+}
+
+function getAllProducts(books) {
+    const products = [];
+    for (const book of books) {
+        for (const product of book.products || []) {
+            products.push(product);
+        }
+    }
+    return products;
+}
+
+export async function getBookCatalog(client) {
+    const books = await fetchBooks(client);
+    const products = getAllProducts(books);
+
+    return products.map((product) => ({
+        ...product,
+        placeUrl: getProductPlaceUrl(product)
+    }));
+}
+
+export async function getBookMetadata(client, gedi) {
+    const products = await getBookCatalog(client);
+    const product = products.find((entry) => String(entry.gedi) === String(gedi));
+
+    if (!product) {
+        throw new Error(`Book with GEDI ${gedi} was not found in the Sanoma library.`);
+    }
+
+    return product;
+}
+
+export async function fetchKToken(client, placeUrl) {
+    const normalizedPlaceUrl = normalizePlaceBookUrl(placeUrl);
+    if (!normalizedPlaceUrl) {
+        throw new Error('Sanoma book URL is missing or invalid.');
+    }
+
+    let response;
+    try {
+        response = await client.get(normalizedPlaceUrl, {
+            headers: {
+                ...DEFAULT_HEADERS,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Referer': PLACE_BOOKS_PAGE_URL
+            }
+        });
+    } catch (err) {
+        if (err.response) {
+            response = err.response;
+        } else {
+            throw err;
+        }
+    }
+
+    const location = response.headers?.location;
+    if (!location) {
+        throw new Error(`open-book redirect was not found for ${normalizedPlaceUrl}.`);
+    }
+
+    const redirectUrl = new URL(location, normalizedPlaceUrl);
+    const ktoken = redirectUrl.searchParams.get('ktoken');
+
+    if (!ktoken) {
+        throw new Error(`ktoken was not found in the redirect for ${normalizedPlaceUrl}.`);
+    }
+
+    return ktoken;
+}
+
+export async function fetchBookAccess(client, gedi, placeUrl) {
+    const product = placeUrl
+        ? { gedi, placeUrl: normalizePlaceBookUrl(placeUrl) }
+        : await getBookMetadata(client, gedi);
+
+    if (!product.placeUrl) {
+        throw new Error(`place.sanoma.it URL was not found for book GEDI ${gedi}.`);
+    }
+
+    const xAuthToken = await fetchKToken(client, product.placeUrl);
+    const response = await client.get(DISPLAY_BOOKS_URL, {
+        headers: {
+            ...DEFAULT_HEADERS,
+            'Accept': 'application/json, text/plain, */*',
+            'Referer': `${EBOOK_ORIGIN}/`,
+            'Origin': EBOOK_ORIGIN,
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'Sec-GPC': '1',
+            'TE': 'trailers',
+            'X-Auth-Token': xAuthToken
+        }
+    });
+
+    const payload = response.data;
+    const firstEntry = Array.isArray(payload?.data) ? payload.data[0] : null;
+    const bookData = firstEntry?.book || payload?.book || payload?.data?.book || null;
+    const resolvedGedi = firstEntry?.gedi || payload?.gedi || gedi;
+    const cookies = bookData?.cookies || {};
+
+    const cookieKeys = ['CloudFront-Policy', 'CloudFront-Signature', 'CloudFront-Key-Pair-Id'];
+    const missingKeys = cookieKeys.filter((key) => !cookies[key]);
+    if (!bookData?.url || missingKeys.length > 0) {
+        throw new Error(`display-books response is incomplete for GEDI ${gedi}.`);
+    }
+
+    return {
+        gedi: String(resolvedGedi),
+        placeUrl: product.placeUrl,
+        xAuthToken,
+        baseUrl: String(bookData.url).replace(/\/$/, ''),
+        cookies,
+        cookieHeader: cookieKeys.map((key) => `${key}=${cookies[key]}`).join('; ')
+    };
+}
+
+export async function fetchCloudfrontCookies(client, gedi, placeUrl) {
+    const access = await fetchBookAccess(client, gedi, placeUrl);
+    return access.cookieHeader;
 }
