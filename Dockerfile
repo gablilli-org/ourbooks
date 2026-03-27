@@ -19,8 +19,8 @@ RUN npm install --omit=dev --no-audit --no-fund --unsafe-perm
 COPY . .
 
 ENV NODE_ENV=production
-ENV PORT=10000
+ENV PORT=7860
 
-EXPOSE 10000
+EXPOSE 7860
 
 CMD ["npm", "run", "start"]
