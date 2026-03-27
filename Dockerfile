@@ -2,7 +2,6 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Runtime deps for providers (Laterza needs pdftk + Java).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     python3 \
@@ -10,7 +9,6 @@ RUN apt-get update \
     g++ \
     openjdk-17-jre-headless \
     pdftk-java \
-    inkscape \
     fonts-liberation \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -21,8 +19,8 @@ RUN npm install --omit=dev --no-audit --no-fund --unsafe-perm
 COPY . .
 
 ENV NODE_ENV=production
-ENV PORT=7860
+ENV PORT=10000
 
-EXPOSE 7860
+EXPOSE 10000
 
 CMD ["npm", "run", "start"]
