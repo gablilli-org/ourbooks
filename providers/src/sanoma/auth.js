@@ -219,149 +219,172 @@ export async function fetchBooks(client) {
 
   const lines = response.data.split('\n').filter(line => line.trim());
   const jsonObjects = lines.map(line => JSON.parse(line));
+  const booksByGedi = new Map();
 
-  let allData = [];
-  
-  jsonObjects.forEach(obj => {
-    if (obj.data && Array.isArray(obj.data)) {
-        for (let i = 0; i < obj.data.length; i++) {
-            if (obj.data[i] !== undefined) allData[i] = obj.data[i];
-        }
-    }
-    if (obj.nodes) {
-      obj.nodes.forEach(node => {
-        if (node && Array.isArray(node.data)) {
-          for (let i = 0; i < node.data.length; i++) {
-              if (node.data[i] !== undefined) allData[i] = node.data[i];
-          }
-        }
-      });
-    }
-  });
+  function mergeBookProduct(operaId, product) {
+    const existing = booksByGedi.get(product.gedi);
 
-  jsonObjects.filter(obj => obj.type === 'chunk' && obj.data).forEach(chunk => {
-    let chunkData = chunk.data;
-    if (Array.isArray(chunkData[0])) chunkData = chunkData[0];
-    for (let i = 0; i < chunkData.length; i++) {
-        if (chunkData[i] !== undefined) allData[i] = chunkData[i];
+    if (!existing) {
+      booksByGedi.set(product.gedi, { name: product.name, opera_id: operaId, products: [product] });
+      return;
     }
-  });
-  
-  const books = [];
-  const seenOperas = new Set();
-  const resolved = new Map();
 
-  function decompressValue(val) {
+    const existingProduct = existing.products[0];
+    if ((product.name || '').length > (existingProduct.name || '').length) {
+      existing.name = product.name;
+      existingProduct.name = product.name;
+    }
+
+    if (!existingProduct.isbn && product.isbn) {
+      existingProduct.isbn = product.isbn;
+    }
+
+    const resourceKey = (resource) => JSON.stringify([
+      resource?.type || '',
+      resource?.category_id || '',
+      resource?.external_id || '',
+      resource?.code || '',
+      resource?.url || ''
+    ]);
+    const seenResources = new Set((existingProduct.resources || []).map(resourceKey));
+    for (const resource of product.resources || []) {
+      const key = resourceKey(resource);
+      if (!seenResources.has(key)) {
+        existingProduct.resources.push(resource);
+        seenResources.add(key);
+      }
+    }
+  }
+
+  function extractBooksFromDataTable(dataTable) {
+    if (!Array.isArray(dataTable) || dataTable.length === 0) return;
+
+    const resolved = new Map();
+
+    function decompressValue(val) {
       if (typeof val === 'number') {
-          if (val < 0 || val >= allData.length || allData[val] === undefined) return val;
-          if (resolved.has(val)) return resolved.get(val);
-          const target = allData[val];
-          if (Array.isArray(target)) {
-              const newArr = [];
-              resolved.set(val, newArr);
-              for (let j = 0; j < target.length; j++) newArr.push(decompressValue(target[j]));
-              return newArr;
-          } else if (target && typeof target === 'object') {
-              const newObj = {};
-              resolved.set(val, newObj);
-              for (const key in target) newObj[key] = decompressValue(target[key]);
-              return newObj;
-          } else {
-              resolved.set(val, target);
-              return target;
-          }
+        if (val < 0 || val >= dataTable.length || dataTable[val] === undefined) return val;
+        if (resolved.has(val)) return resolved.get(val);
+        const target = dataTable[val];
+        if (Array.isArray(target)) {
+          const newArr = [];
+          resolved.set(val, newArr);
+          for (let j = 0; j < target.length; j++) newArr.push(decompressValue(target[j]));
+          return newArr;
+        } else if (target && typeof target === 'object') {
+          const newObj = {};
+          resolved.set(val, newObj);
+          for (const key in target) newObj[key] = decompressValue(target[key]);
+          return newObj;
+        } else {
+          resolved.set(val, target);
+          return target;
+        }
       }
       return val;
-  }
+    }
 
-  for (let i = 0; i < allData.length; i++) {
-    const item = allData[i];
-    
-    if (item && typeof item === 'object' && !Array.isArray(item) && 'opera_id' in item && 'display_name' in item) {
-        const fullyResolved = decompressValue(i);
-        if (!fullyResolved || !fullyResolved.opera_id || seenOperas.has(fullyResolved.opera_id)) continue;
-        seenOperas.add(fullyResolved.opera_id);
-        
-        const productsMap = new Map();
-        const crawlVisited = new Set();
-        
-        function extractProducts(node, namePath, inheritedIsbn) {
-            if (!node || typeof node !== 'object') return;
-            if (crawlVisited.has(node)) return;
-            crawlVisited.add(node);
-            
-            let currentNames = [...namePath];
-            const potentialNames = [node.display_name, node.title, node.name, node.category_label, node.category_name];
-            
-            for (const n of potentialNames) {
-                const str = String(n || '').trim();
-                if (str && str !== 'Prodotti' && str !== 'null' && str !== 'undefined' && str !== '[object Object]' && !/^\d+$/.test(str)) {
-                    let isRedundant = false;
-                    for (let j = 0; j < currentNames.length; j++) {
-                        const existing = currentNames[j];
-                        if (existing.toLowerCase() === str.toLowerCase()) { isRedundant = true; break; }
-                        if (str.toLowerCase().includes(existing.toLowerCase()) && str.length > existing.length) { currentNames[j] = str; isRedundant = true; break; }
-                        if (existing.toLowerCase().includes(str.toLowerCase())) { isRedundant = true; break; }
-                    }
-                    if (!isRedundant) currentNames.push(str);
-                }
-            }
-            
-            const currentIsbn = node.isbn || node.paper_isbn || inheritedIsbn;
-            let gediCode = null;
-            if (node.external_id && /^\d{5,10}$/.test(String(node.external_id))) gediCode = String(node.external_id);
-            else if (node.id && /^\d{5,10}$/.test(String(node.id))) gediCode = String(node.id);
-            
-            if (gediCode) {
-                let finalParts = [];
-                for (let j = 0; j < currentNames.length; j++) {
-                    let isRedundant = false;
-                    let currFirstWord = currentNames[j].trim().split(/[\s\-_]+/)[0].toLowerCase();
-                    for (let k = j + 1; k < currentNames.length; k++) {
-                        let nextFirstWord = currentNames[k].trim().split(/[\s\-_]+/)[0].toLowerCase();
-                        if (currFirstWord && currFirstWord === nextFirstWord) { isRedundant = true; break; }
-                    }
-                    if (!isRedundant) finalParts.push(currentNames[j]);
-                }
-                let finalName = finalParts.join(' - ') || `Volume (${gediCode})`;
-                
-                if (!productsMap.has(gediCode)) {
-                    productsMap.set(gediCode, { isbn: currentIsbn || '', name: finalName, gedi: gediCode, resources: [] });
-                } else if (finalName.length > productsMap.get(gediCode).name.length) {
-                    productsMap.get(gediCode).name = finalName;
-                }
-                
-                productsMap.get(gediCode).resources.push({
-                    type: node.category_name || '',
-                    category_id: node.category_id || '',
-                    external_id: node.external_id || '',
-                    code: node.internal_code || '',
-                    url: node.url || ''
-                });
-            }
-            
-            if (Array.isArray(node)) {
-                for (let k = 0; k < node.length; k++) {
-                    if (typeof node[k] === 'object') extractProducts(node[k], currentNames, currentIsbn);
-                }
-            } else {
-                for (const key in node) {
-                    if (typeof node[key] === 'object') extractProducts(node[key], currentNames, currentIsbn);
-                }
-            }
+    for (let i = 0; i < dataTable.length; i++) {
+      const item = dataTable[i];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      if (!('opera_id' in item) || !('display_name' in item)) continue;
+
+      const fullyResolved = decompressValue(i);
+      if (!fullyResolved || !fullyResolved.opera_id || fullyResolved.is_opera !== true) continue;
+      const operaName = String(fullyResolved.display_name || '').trim();
+      const includedProducts = Array.isArray(fullyResolved.included) ? fullyResolved.included : [];
+
+      for (const includedProduct of includedProducts) {
+        if (!includedProduct || typeof includedProduct !== 'object' || Array.isArray(includedProduct)) continue;
+
+        const productName = String(includedProduct.display_name || includedProduct.title || includedProduct.name || '').trim();
+        const productIsbn = includedProduct.isbn || includedProduct.paper_isbn || '';
+        const resources = Array.isArray(includedProduct.resource) ? includedProduct.resource : [];
+
+        for (const resource of resources) {
+          if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
+
+          const gediCode = resource.external_id && /^\d{5,10}$/.test(String(resource.external_id))
+            ? String(resource.external_id)
+            : null;
+          const resourceUrl = typeof resource.url === 'string' ? resource.url : '';
+          const isLibromedia = resourceUrl.includes('/prodotti_digitali/libromedia/');
+
+          if (!gediCode || !isLibromedia) continue;
+
+          const resourceName = String(resource.display_name || '').trim();
+          const finalName = buildSanomaBookName(operaName, productName, resourceName, gediCode);
+
+          mergeBookProduct(fullyResolved.opera_id, {
+            isbn: productIsbn || resource.paper_isbn || '',
+            name: finalName,
+            gedi: gediCode,
+            resources: [{
+              type: resource.category_name || '',
+              category_id: resource.category_id || '',
+              external_id: resource.external_id || '',
+              code: resource.internal_code || '',
+              url: resource.url || ''
+            }]
+          });
         }
-        
-        let initialPath = [];
-        if (fullyResolved.display_name) initialPath.push(fullyResolved.display_name);
-        extractProducts(fullyResolved.included || fullyResolved, initialPath, '');
-        
-        for (const product of productsMap.values()) {
-            books.push({ name: product.name, opera_id: fullyResolved.opera_id, products: [product] });
-        }
+      }
     }
   }
 
-  return books;
+  for (const obj of jsonObjects) {
+    if (Array.isArray(obj.data)) {
+      extractBooksFromDataTable(obj.data);
+    }
+
+    if (Array.isArray(obj.nodes)) {
+      for (const node of obj.nodes) {
+        if (Array.isArray(node?.data)) {
+          extractBooksFromDataTable(node.data);
+        }
+      }
+    }
+
+    if (obj.type === 'chunk' && Array.isArray(obj.data)) {
+      extractBooksFromDataTable(obj.data);
+    }
+  }
+
+  return Array.from(booksByGedi.values());
+}
+
+function normalizeBookLabel(value) {
+    return String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+}
+
+function buildSanomaBookName(operaName, productName, resourceName, gediCode) {
+    const opera = String(operaName || '').trim();
+    const product = String(productName || '').trim();
+    const resource = String(resourceName || '').trim();
+
+    if (!resource) {
+        return product || opera || `Volume (${gediCode})`;
+    }
+
+    const normalizedOpera = normalizeBookLabel(opera);
+    const normalizedProduct = normalizeBookLabel(product);
+    const normalizedResource = normalizeBookLabel(resource);
+
+    if (!product || normalizedResource === normalizedProduct) {
+        return product || resource || opera || `Volume (${gediCode})`;
+    }
+
+    if (
+        (normalizedOpera && normalizedResource.includes(normalizedOpera))
+        || (normalizedProduct && normalizedResource.includes(normalizedProduct))
+    ) {
+        return resource;
+    }
+
+    return `${product} - ${resource}`;
 }
 
 function normalizePlaceBookUrl(url) {
