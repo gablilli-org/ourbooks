@@ -2,6 +2,34 @@ import fetch from 'node-fetch';
 import msgpack from 'msgpack-lite';
 import aesjs from 'aes-js';
 
+function extractBase64Key(snippet) {
+    const keyMatch = snippet.match(/['"]((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)['"]/);
+    return keyMatch ? Buffer.from(keyMatch[1], 'base64') : null;
+}
+
+function extractConstructorKey(scriptText) {
+    const constructorMatch = scriptText.match(
+        /var\s+([A-Za-z_$][\w$]*)=String\.fromCharCode\(([^)]*)\),([A-Za-z_$][\w$]*)=["']constructor["'];\3\[\3\]\[\3\]\((.*?)\)\(\)/s
+    );
+    if (!constructorMatch) {
+        return null;
+    }
+
+    const [, charVar, charCodes, , expression] = constructorMatch;
+    const sourceCharacters = charCodes
+        .split(',')
+        .map(e => parseInt(e.trim(), 10))
+        .map(e => String.fromCharCode(e));
+    const indexPattern = new RegExp(`${charVar}\\[(\\d+)\\]`, 'g');
+    const indexes = [...expression.matchAll(indexPattern)].map(match => parseInt(match[1], 10));
+    if (indexes.length === 0) {
+        return null;
+    }
+
+    const snippet = indexes.map(index => sourceCharacters[index]).join('');
+    return extractBase64Key(snippet);
+}
+
 /**
  * Fetches the encryption key from the bSmart website
  * @returns {Promise<Buffer>} The encryption key
@@ -9,15 +37,24 @@ import aesjs from 'aes-js';
 export async function fetchEncryptionKey() {
     const page = await fetch('https://my.bsmart.it/');
     const text = await page.text();
-    const script = text.match(/<script src="(\/scripts\/.*.min.js)">/)[1];
-    const scriptText = await fetch('https://my.bsmart.it' + script).then(res => res.text());
-    let keyScript = scriptText.slice(scriptText.indexOf('var i=String.fromCharCode'));
-    keyScript = keyScript.slice(0, keyScript.indexOf('()'));
-    const sourceCharacters = keyScript.match(/var i=String.fromCharCode\((((\d+),)+(\d+))\)/)[1].split(',').map(e => parseInt(e)).map(e => String.fromCharCode(e));
-    const map = keyScript.match(/i\[\d+\]/g).map(e => parseInt(e.slice(2, -1)));
-    const snippet = map.map(e => sourceCharacters[e]).join('');
-    const key = Buffer.from(snippet.match(/'((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)'/)[1], 'base64');
-    return key;
+
+    const scripts = [...text.matchAll(/<script[^>]+src="([^"]+\.js[^"]*)"[^>]*>/g)]
+        .map(match => match[1])
+        .filter(src => src.startsWith('/'));
+
+    if (scripts.length === 0) {
+        throw new Error('No JavaScript bundles found on https://my.bsmart.it/');
+    }
+
+    for (const script of scripts) {
+        const scriptText = await fetch('https://my.bsmart.it' + script).then(res => res.text());
+        const key = extractConstructorKey(scriptText);
+        if (key) {
+            return key;
+        }
+    }
+
+    throw new Error('Unable to extract the bSmart encryption key from the current website bundles.');
 }
 
 /**
