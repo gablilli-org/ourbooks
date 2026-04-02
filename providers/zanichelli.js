@@ -15,6 +15,8 @@ import ZipStream from "zip-stream";
 const prompt = PromptSync({ sigint: true });
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 const WEBREADER_REFERER = "https://webreader.zanichelli.it/6.0/zanichelli/";
+const KITABOO_PREFETCH_WINDOW = 16; // depends on where u run it
+const KITABOO_FETCH_RETRIES = 3;
 
 const argv = yargs(process.argv.slice(2))
 	.option("username", {
@@ -175,6 +177,73 @@ function parseSvgPageSize(svg) {
 	if (width && height) return { width, height };
 
 	return null;
+}
+
+async function fetchWithRetry(url, headers, timeoutMs = 10000, retries = KITABOO_FETCH_RETRIES) {
+	let lastError = null;
+
+	for (let attempt = 1; attempt <= retries; attempt++) {
+		const abortController = new AbortController();
+		const timeoutId = setTimeout(() => abortController.abort(), timeoutMs);
+
+		try {
+			const response = await fetch(url, {
+				headers,
+				signal: abortController.signal,
+			});
+			if (!response.ok) {
+				throw new Error(`HTTP ${response.status}`);
+			}
+			return await response.text();
+		} catch (err) {
+			lastError = err;
+			if (attempt === retries) break;
+		} finally {
+			clearTimeout(timeoutId);
+		}
+	}
+
+	throw lastError;
+}
+
+function createKitabooPageAssetTask(itemref, items, ebookID, readerCookies, encryptionKey) {
+	const idref = itemref.$.idref;
+	const headers = {
+		"User-Agent": USER_AGENT,
+		"Referer": "https://webreader.zanichelli.it/",
+		cookie: readerCookies,
+	};
+
+	const formats = [
+		{ kind: 'svg', key: `images${idref}svgz`, timeoutMs: 10000 },
+		{ kind: 'png', key: `images${idref}png`, timeoutMs: 10000 },
+		{ kind: 'jpg', key: `images${idref}jpg`, timeoutMs: 5000 },
+	];
+
+	return async () => {
+		for (const format of formats) {
+			const href = items[format.key];
+			if (!href) continue;
+
+			const url = `https://webreader.zanichelli.it/${ebookID}/html5/${ebookID}/OPS/${href}`;
+			const encryptedPayload = await fetchWithRetry(url, headers, format.timeoutMs);
+			const payload = await decryptFile(encryptionKey, encryptedPayload);
+
+			return {
+				idref,
+				kind: format.kind,
+				payload,
+				imageName: path.posix.basename(href),
+				fallbackPageSize: format.kind === 'svg' ? parseSvgPageSize(payload) : null,
+			};
+		}
+
+		throw new Error(`Unable to find suitable format for ${idref}`);
+	};
+}
+
+function shouldLogKitabooProgress(index, total) {
+	return index < 3 || index === total - 1 || (index + 1) % 10 === 0;
 }
 
 function normalizePageManifestEntry(entry) {
@@ -368,6 +437,7 @@ async function loadKitabooTextPages(usertoken, textBookId, sessionCookies = '', 
 	let pageList = null;
 	let pageManifest = [];
 
+	// lol pages.json and page-list.json
 	for (const mode of modeCandidates) {
 		const pagesResponse = await fetch(`https://webreader.zanichelli.it/${textBookId}/${mode}/${textBookId}/OPS/pages.json`, {
 			headers: requestHeaders,
@@ -434,18 +504,85 @@ function getTextPageScale(textPage, pageWidth, pageHeight) {
 	};
 }
 
+function buildTextRuns(words) {
+	const sortedWords = [...words].sort((left, right) => {
+		const yDelta = left.y - right.y;
+		if (Math.abs(yDelta) > 0.5) return yDelta;
+		return left.x - right.x;
+	});
+
+	const runs = [];
+	let currentRun = null;
+
+	for (const word of sortedWords) {
+		if (!currentRun) {
+			currentRun = {
+				words: [word],
+				x: word.x,
+				y: word.y,
+				height: word.height,
+				endX: word.x + word.width,
+			};
+			continue;
+		}
+
+		const sameLineTolerance = Math.max(1, currentRun.height * 0.25);
+		const gap = word.x - currentRun.endX;
+		const sameLine =
+			Math.abs(word.y - currentRun.y) <= sameLineTolerance
+			&& Math.abs(word.height - currentRun.height) <= sameLineTolerance
+			&& gap >= -1
+			&& gap <= currentRun.height * 6;
+
+		if (!sameLine) {
+			runs.push({
+				text: currentRun.words.map((entry) => entry.text).join(' '),
+				x: currentRun.x,
+				y: currentRun.y,
+				width: currentRun.endX - currentRun.x,
+				height: currentRun.height,
+			});
+			currentRun = {
+				words: [word],
+				x: word.x,
+				y: word.y,
+				height: word.height,
+				endX: word.x + word.width,
+			};
+			continue;
+		}
+
+		currentRun.words.push(word);
+		currentRun.endX = Math.max(currentRun.endX, word.x + word.width);
+		currentRun.height = Math.max(currentRun.height, word.height);
+	}
+
+	if (currentRun) {
+		runs.push({
+			text: currentRun.words.map((entry) => entry.text).join(' '),
+			x: currentRun.x,
+			y: currentRun.y,
+			width: currentRun.endX - currentRun.x,
+			height: currentRun.height,
+		});
+	}
+
+	return runs;
+}
+
 function drawInvisibleTextLayer(doc, textPage) {
 	if (!textPage?.words?.length) return;
 
 	const { xScale, yScale } = getTextPageScale(textPage, doc.page.width, doc.page.height);
+	const textRuns = buildTextRuns(textPage.words);
 
 	doc.save();
 	doc.fillColor('black');
 	doc.fillOpacity(0);
 
-	for (const word of textPage.words) {
-		const width = word.width * xScale;
-		const height = word.height * yScale;
+	for (const run of textRuns) {
+		const width = run.width * xScale;
+		const height = run.height * yScale;
 		const fontSize = Math.max(1, height * 0.85);
 		const options = {
 			lineBreak: false,
@@ -457,12 +594,12 @@ function drawInvisibleTextLayer(doc, textPage) {
 		};
 
 		doc.fontSize(fontSize);
-		const measuredWidth = doc.widthOfString(word.text, options);
+		const measuredWidth = doc.widthOfString(run.text, options);
 		if (measuredWidth > 0) {
 			options.horizontalScaling = (width / measuredWidth) * 100;
 		}
 
-		doc.text(word.text, word.x * xScale, word.y * yScale, options);
+		doc.text(run.text, run.x * xScale, run.y * yScale, options);
 	}
 
 	doc.restore();
@@ -492,7 +629,7 @@ async function downloadKitabooBook(bookReaderUrl, doOcr, outputDir, sessionCooki
 			"User-Agent": USER_AGENT,
 			usertoken,
 			cookie: `usertoken=${usertoken}`,
-		},
+		}, // wtf is this mess?
 	}).then((res) => res.json()).catch((err) => {
 		console.log("Error: ", err);
 		process.exit(1);
@@ -515,7 +652,7 @@ async function downloadKitabooBook(bookReaderUrl, doOcr, outputDir, sessionCooki
 			"Referer": "https://webreader.zanichelli.it/",
 			usertoken,
 			cookie: `usertoken=${usertoken}`,
-		},
+		}, // and wtf is 123234234 supposed to be? it doesn't seem to do anything, but it needs to be there or it returns 403 forbidden, nice job zanichelli
 	}).catch((err) => {
 		console.log("Error: ", err);
 		process.exit(1);
@@ -602,86 +739,50 @@ async function downloadKitabooBook(bookReaderUrl, doOcr, outputDir, sessionCooki
 			const doc = new PDFDocument({ autoFirstPage: false, margin: 0 });
 			const writeStream = fs.createWriteStream(pdfPath);
 			doc.pipe(writeStream);
+			const pageItemrefs = content.package.spine[0].itemref;
+			const pageTasks = pageItemrefs.map((itemref) => createKitabooPageAssetTask(itemref, items, ebookID, readerCookies, encryptionKey));
+			const pendingPageTasks = new Map();
+			let nextTaskIndex = 0;
 
-			for (let itemref of content.package.spine[0].itemref) {
-				console.log(`Downloading ${itemref.$.idref}`);
+			const schedulePageTasks = () => {
+				while (nextTaskIndex < pageTasks.length && pendingPageTasks.size < KITABOO_PREFETCH_WINDOW) {
+					pendingPageTasks.set(nextTaskIndex, pageTasks[nextTaskIndex]());
+					nextTaskIndex++;
+				}
+			};
+
+			schedulePageTasks();
+
+			for (let index = 0; index < pageItemrefs.length; index++) {
+				const itemref = pageItemrefs[index];
+				if (shouldLogKitabooProgress(index, pageItemrefs.length)) {
+					console.log(`Downloading page ${index + 1}/${pageItemrefs.length}`);
+				}
+
+				const pageAsset = await pendingPageTasks.get(index);
+				pendingPageTasks.delete(index);
+				schedulePageTasks();
+
 				let pageSize = null;
-				let imageName = null;
+				const imageName = pageAsset.imageName;
 
-				if (items[`images${itemref.$.idref}svgz`] !== undefined) {
-					imageName = path.posix.basename(items[`images${itemref.$.idref}svgz`]);
-					let svg = null;
-					while (!svg) {
-						const abortController = new AbortController();
-						const promise = fetch(
-							`https://webreader.zanichelli.it/${ebookID}/html5/${ebookID}/OPS/${items[`images${itemref.$.idref}svgz`]}`,
-							{ headers: {
-								"User-Agent": USER_AGENT,
-								"Referer": "https://webreader.zanichelli.it/",
-								cookie: readerCookies 
-							}, signal: abortController.signal }
-						).then(async (res) => {
-							return decryptFile(encryptionKey, await res.text());
-						});
-							const timeoutId = setTimeout(() => abortController.abort(), 10000);
-						svg = await promise;
-						clearTimeout(timeoutId);
-					}
-					pageSize = pageManifestByImage.get(imageName) || parseSvgPageSize(svg) || { width: 612, height: 792 };
+				if (pageAsset.kind === 'svg') {
+					pageSize = pageManifestByImage.get(imageName) || pageAsset.fallbackPageSize || { width: 612, height: 792 };
 					pageSize = { width: pageSize.width, height: pageSize.height };
 					doc.addPage({ size: [pageSize.width, pageSize.height], margins: { top: 0, right: 0, bottom: 0, left: 0 } });
-					doc.addSVG(svg, 0, 0, { width: pageSize.width, height: pageSize.height, preserveAspectRatio: "none" });
-				} else if (items[`images${itemref.$.idref}png`] !== undefined) {
-					imageName = path.posix.basename(items[`images${itemref.$.idref}png`]);
-					let png = null;
-					while (!png) {
-						const abortController = new AbortController();
-						const promise = fetch(
-							`https://webreader.zanichelli.it/${ebookID}/html5/${ebookID}/OPS/${items[`images${itemref.$.idref}png`]}`,
-							{ headers: {
-								"User-Agent": USER_AGENT,
-								"Referer": "https://webreader.zanichelli.it/",
-								cookie: readerCookies
-							}, signal: abortController.signal }
-						).then(async (res) => {
-							return decryptFile(encryptionKey, await res.text());
-						});
-						const timeoutId = setTimeout(() => abortController.abort(), 10000);
-						png = await promise;
-						clearTimeout(timeoutId);
-					}
-					const pngImage = doc.openImage(png);
+					doc.addSVG(pageAsset.payload, 0, 0, { width: pageSize.width, height: pageSize.height, preserveAspectRatio: "none" });
+				} else if (pageAsset.kind === 'png') {
+					const pngImage = doc.openImage(pageAsset.payload);
 					const manifestPage = pageManifestByImage.get(imageName);
 					pageSize = manifestPage ? { width: manifestPage.width, height: manifestPage.height } : { width: pngImage.width, height: pngImage.height };
 					doc.addPage({ size: [pageSize.width, pageSize.height], margins: { top: 0, right: 0, bottom: 0, left: 0 } });
 					doc.image(pngImage, 0, 0, { width: pageSize.width, height: pageSize.height });
-				} else if (items[`images${itemref.$.idref}jpg`] !== undefined) {
-					imageName = path.posix.basename(items[`images${itemref.$.idref}jpg`]);
-					let jpeg = null;
-					while (!jpeg) {
-						const abortController = new AbortController();
-						const promise = fetch(
-							`https://webreader.zanichelli.it/${ebookID}/html5/${ebookID}/OPS/${items[`images${itemref.$.idref}jpg`]}`,
-							{ headers: {
-								"User-Agent": USER_AGENT,
-								"Referer": "https://webreader.zanichelli.it/",
-								cookie: readerCookies
-							}, signal: abortController.signal }
-						).then(async (res) => {
-							return decryptFile(encryptionKey, await res.text());
-						});
-						const timeoutId = setTimeout(() => abortController.abort(), 5000);
-						jpeg = await promise;
-						clearTimeout(timeoutId);
-					}
-					const jpegImage = doc.openImage(jpeg);
+				} else if (pageAsset.kind === 'jpg') {
+					const jpegImage = doc.openImage(pageAsset.payload);
 					const manifestPage = pageManifestByImage.get(imageName);
 					pageSize = manifestPage ? { width: manifestPage.width, height: manifestPage.height } : { width: jpegImage.width, height: jpegImage.height };
 					doc.addPage({ size: [pageSize.width, pageSize.height], margins: { top: 0, right: 0, bottom: 0, left: 0 } });
 					doc.image(jpegImage, 0, 0, { width: pageSize.width, height: pageSize.height });
-				} else {
-					console.log(`Unable to find suitable format for ${itemref.$.idref}`);
-					continue;
 				}
 
 				const candidatePageIds = (String(itemref.$.idref).match(/\d+/g) || []).map((value) => normalizePageId(value));
