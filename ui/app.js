@@ -4,6 +4,15 @@ let selectedProvider = null;
 let ws = null;
 let running = false;
 let progressValue = 0;
+let lastHeuristicProgressTick = 0;
+
+const LOG_PATTERNS = {
+  completedStage: /download completato|merging pages|processo terminato|download pronto/i,
+  activeStage: /downloading|converting page|processing annotations/i
+};
+const HEURISTIC_PROGRESS_THROTTLE_MS = 250;
+const HEURISTIC_PROGRESS_INCREMENT = 1;
+const HEURISTIC_PROGRESS_MAX = 95;
 
 /* DOM refs */
 const providerList   = document.getElementById('providerList');
@@ -76,6 +85,7 @@ function renderGrid() {
 function selectProvider(id) {
   selectedProvider = id;
   progressValue = 0;
+  lastHeuristicProgressTick = 0;
   setProgress(0, 'idle', 'Pronto a iniziare', 'Lo stato si aggiorna durante il download');
 
   /* update sidebar active state */
@@ -625,9 +635,9 @@ function connectWS() {
       case 'file': {
         const link = document.createElement('a');
         link.href = msg.url;
-        link.target = '_self';
+        link.target = '_blank';
         link.rel = 'noopener';
-        link.download = msg.name || '';
+        if (msg.name) link.download = msg.name;
         link.textContent = `\n📄 Download pronto: ${msg.name} — clicca per aprire\n`;
         link.style.color = '#4ade80';
         link.style.display = 'block';
@@ -673,6 +683,7 @@ downloadFormEl.addEventListener('submit', (e) => {
 
   terminal.textContent = '';
   progressValue = 0;
+  lastHeuristicProgressTick = 0;
   setProgress(2, 'running', 'Download avviato', 'Preparazione richiesta');
   ws.send(JSON.stringify({ type: 'start', provider: selectedProvider, options }));
 });
@@ -744,7 +755,7 @@ function setProgress(percent, status, label, hint) {
 function updateProgressFromLog(text) {
   const lines = String(text || '').split('\n');
   for (const line of lines) {
-    const normalized = line.replace(',', '.');
+    const normalized = line.replace(/,/g, '.');
 
     const percentMatch = normalized.match(/(\d+(?:\.\d+)?)\s*%/);
     if (percentMatch) {
@@ -759,10 +770,8 @@ function updateProgressFromLog(text) {
     if (slashMatch) {
       const current = Number(slashMatch[1]);
       const total = Number(slashMatch[2]);
-      if (total > 0 && current >= 0) {
-        const ratio = (current / total) * 100;
-        setProgress(ratio, 'running', 'Download in corso', `Passo ${current} di ${total}`);
-      }
+      const ratio = calculateProgressRatio(current, total);
+      if (ratio !== null) setProgress(ratio, 'running', 'Download in corso', `Passo ${current} di ${total}`);
       continue;
     }
 
@@ -770,28 +779,37 @@ function updateProgressFromLog(text) {
     if (ofMatch) {
       const current = Number(ofMatch[1]);
       const total = Number(ofMatch[2]);
-      if (total > 0 && current >= 0) {
-        const ratio = (current / total) * 100;
-        setProgress(ratio, 'running', 'Download in corso', `Passo ${current} di ${total}`);
-      }
+      const ratio = calculateProgressRatio(current, total);
+      if (ratio !== null) setProgress(ratio, 'running', 'Download in corso', `Passo ${current} di ${total}`);
       continue;
     }
 
-    if (/download completato|merging pages|processo terminato|download pronto/i.test(normalized)) {
+    if (LOG_PATTERNS.completedStage.test(normalized)) {
       setProgress(98, 'running', 'Finalizzazione', 'Composizione file finale');
       continue;
     }
 
-    if (/downloading|converting page|processing annotations/i.test(normalized)) {
-      setProgress(progressValue + 1, 'running', 'Download in corso', 'Elaborazione pagine');
+    if (LOG_PATTERNS.activeStage.test(normalized)) {
+      const now = Date.now();
+      if (now - lastHeuristicProgressTick >= HEURISTIC_PROGRESS_THROTTLE_MS) {
+        lastHeuristicProgressTick = now;
+        setProgress(Math.min(progressValue + HEURISTIC_PROGRESS_INCREMENT, HEURISTIC_PROGRESS_MAX), 'running', 'Download in corso', 'Elaborazione pagine');
+      }
     }
   }
+}
+
+function calculateProgressRatio(current, total) {
+  if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0 || current < 0) return null;
+  return (current / total) * 100;
 }
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('Service worker registration failed:', err);
+    });
   });
 }
 
