@@ -3,7 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>ourbooks</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -67,6 +71,27 @@
               </button>
             </div>
           </form>
+        </div>
+
+        <section id="progressSection" class="progress-section hidden" aria-live="polite">
+          <div class="progress-header">
+            <span id="progressBadge" class="status-pill idle">In attesa</span>
+            <span id="progressLabel" class="progress-label">Pronto a iniziare</span>
+          </div>
+          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="progressFill" class="progress-fill"></div>
+          </div>
+          <div class="progress-footer">
+            <span id="progressPercent">0%</span>
+            <span id="progressHint">Lo stato si aggiorna durante il download</span>
+          </div>
+        </section>
+
+        <div class="cli-toggle-wrap">
+          <label class="cli-toggle">
+            <input id="cliToggle" type="checkbox" />
+            <span>Mostra output tecnico (CLI)</span>
+          </label>
         </div>
 
         <!-- Terminal output -->

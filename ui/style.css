@@ -386,6 +386,121 @@ html, body {
   background: rgba(248, 81, 73, 0.25);
 }
 
+/* ─── Progress ─── */
+.progress-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--surface2);
+}
+
+.status-pill.running {
+  color: var(--accent);
+  border-color: rgba(88, 166, 255, 0.4);
+  background: rgba(88, 166, 255, 0.1);
+}
+
+.status-pill.done {
+  color: var(--green);
+  border-color: rgba(63, 185, 80, 0.4);
+  background: rgba(63, 185, 80, 0.1);
+}
+
+.status-pill.error {
+  color: var(--red);
+  border-color: rgba(248, 81, 73, 0.35);
+  background: rgba(248, 81, 73, 0.12);
+}
+
+.status-pill.stopped {
+  color: var(--yellow);
+  border-color: rgba(210, 153, 34, 0.35);
+  background: rgba(210, 153, 34, 0.12);
+}
+
+.progress-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.progress-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #7dd3fc);
+  transition: width 0.25s ease;
+}
+
+.progress-footer {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+#progressPercent {
+  font-weight: 700;
+  color: var(--text);
+}
+
+#progressHint {
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* ─── CLI toggle ─── */
+.cli-toggle-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -8px;
+}
+
+.cli-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.cli-toggle input {
+  accent-color: var(--accent);
+}
+
 /* ─── Terminal ─── */
 .terminal-section {
   background: #010409;
@@ -551,5 +666,20 @@ html, body {
     width: auto;
     flex: 1;
     min-width: 120px;
+  }
+
+  .progress-header,
+  .progress-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .progress-label,
+  #progressHint {
+    text-align: left;
+  }
+
+  .cli-toggle-wrap {
+    justify-content: flex-start;
   }
 }
