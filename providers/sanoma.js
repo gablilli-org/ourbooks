@@ -1,12 +1,9 @@
 import yargs from 'yargs';
-import PromptSync from 'prompt-sync';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
 import { pipeline } from 'stream';
 import { loginSanoma, getBookCatalog, fetchBookAccess } from './src/sanoma/auth.js';
-
-const prompt = PromptSync({ sigint: true });
 
 function findPdfUrlInMaster(node, seen = new Set()) {
   if (!node || typeof node !== 'object') return null;
@@ -60,23 +57,31 @@ export async function run(options = {}) {
   }
 
   (async () => {
-    let userId       = id       || argv.id;
-    let userPassword = password || argv.password;
-    let bookGedi     = gedi     || argv.gedi;
+    const userId       = id       || argv.id;
+    const userPassword = password || argv.password;
+    const bookGedi     = gedi     || argv.gedi;
+
+    if (!userId) {
+      console.error('Errore: parametro --id mancante');
+      process.exit(1);
+    }
+    if (!userPassword) {
+      console.error('Errore: parametro --password mancante');
+      process.exit(1);
+    }
+    if (!bookGedi) {
+      console.error('Errore: parametro --gedi mancante');
+      process.exit(1);
+    }
 
     console.log('Warning: this script might log you out of other devices');
 
-    while (!userId)       userId       = prompt('Enter account email: ');
-    while (!userPassword) userPassword = prompt('Enter account password: ', { echo: '*' });
-
-    // login myplace
     console.log('Logging in to MyPlace...');
     const skClient = await loginSanoma(userId, userPassword).catch(err => {
       console.error('Failed to log in:', err.message);
       process.exit(1);
     });
 
-    // fetch book list
     console.log('Fetching book list...');
     const catalog = await getBookCatalog(skClient);
 
@@ -88,20 +93,15 @@ export async function run(options = {}) {
     console.log('Books (MyPlace):');
     console.table(tableObj);
 
-    let gediCode = bookGedi;
-    while (!gediCode) gediCode = prompt("Enter the book's gedi: ");
+    const selectedProduct = catalog.find((product) => String(product.gedi) === String(bookGedi));
+    const targetBookName = tableObj[bookGedi] || `GEDI ${bookGedi}`;
 
-    const selectedProduct = catalog.find((product) => String(product.gedi) === String(gediCode));
-    const targetBookName = tableObj[gediCode] || `GEDI ${gediCode}`;
-
-    // get cookies from display books
     console.log('Obtaining access credentials for "' + targetBookName + '"...');
-    const bookAccess = await fetchBookAccess(skClient, gediCode, selectedProduct?.placeUrl).catch(err => {
+    const bookAccess = await fetchBookAccess(skClient, bookGedi, selectedProduct?.placeUrl).catch(err => {
       console.error('Failed to obtain book access:', err.message);
       process.exit(1);
     });
 
-    // fetch master so we can get pdf url
     const masterUrl = `${bookAccess.baseUrl}/assets/book/data/master.json?t=${Date.now()}`;
     console.log('Fetching book metadata...');
 
@@ -128,7 +128,6 @@ export async function run(options = {}) {
 
     console.log('PDF URL found:', pdfUrl);
 
-    // download pdf
     let baseName = argv.output || options.output;
     if (!baseName) baseName = targetBookName.replace(/[\\/:*?"<>|]/g, '') + '.pdf';
     const outFilePath = path.join(outputDir, baseName);
