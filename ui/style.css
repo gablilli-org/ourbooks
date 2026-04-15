@@ -480,6 +480,10 @@ html, body {
   text-align: right;
 }
 
+.progress-download-action {
+  margin-top: 12px;
+}
+
 /* ─── CLI toggle ─── */
 .cli-toggle-wrap {
   display: flex;
