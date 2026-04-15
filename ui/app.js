@@ -7,6 +7,7 @@ let progressValue = 0;
 let lastHeuristicProgressTick = 0;
 let reconnectTimer = null;
 let reconnectNoticeShown = false;
+let connectTimeoutTimer = null;
 
 const LOG_PATTERNS = {
   completedStage: /download completato|merging pages|processo terminato|download pronto/i,
@@ -17,6 +18,7 @@ const HEURISTIC_PROGRESS_INCREMENT = 1;
 const HEURISTIC_PROGRESS_MAX = 95;
 const MAX_DOWNLOAD_URL_LENGTH = 2048;
 const WS_RECONNECT_DELAY_MS = 1200;
+const WS_CONNECT_TIMEOUT_MS = 10000;
 
 /* DOM refs */
 const providerList   = document.getElementById('providerList');
@@ -605,13 +607,15 @@ function setupBsmartBookLoader() {
 
 /* ─── WebSocket ─── */
 function connectWS() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  if (isSocketOpen(ws) || isSocketConnecting(ws)) return;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.host}`);
   ws = socket;
+  armConnectTimeout(socket);
 
   socket.onopen = () => {
     reconnectNoticeShown = false;
+    clearConnectTimeout();
     clearReconnectTimer();
     appendTerminal('Connesso al server.\n', 'muted');
   };
@@ -679,9 +683,12 @@ function connectWS() {
   };
 
   socket.onclose = () => {
+    clearConnectTimeout();
     if (ws === socket) ws = null;
     setRunning(false);
-    scheduleReconnect();
+    if (document.visibilityState === 'visible') {
+      scheduleReconnect();
+    }
   };
 
   socket.onerror = () => {
@@ -874,14 +881,14 @@ function bindConnectionLifecycle() {
 }
 
 function ensureWSConnected() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  if (isSocketOpen(ws) || isSocketConnecting(ws)) return;
   clearReconnectTimer();
   connectWS();
 }
 
 function scheduleReconnect() {
   if (document.visibilityState !== 'visible') return;
-  if (reconnectTimer || (ws && ws.readyState === WebSocket.CONNECTING)) return;
+  if (reconnectTimer || isSocketOpen(ws) || isSocketConnecting(ws)) return;
   if (!reconnectNoticeShown) {
     reconnectNoticeShown = true;
     appendTerminal('\nConnessione persa, riconnessione automatica...\n', 'muted');
@@ -896,6 +903,30 @@ function clearReconnectTimer() {
   if (!reconnectTimer) return;
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
+}
+
+function armConnectTimeout(socket) {
+  clearConnectTimeout();
+  connectTimeoutTimer = setTimeout(() => {
+    if (socket !== ws) return;
+    if (socket.readyState === WebSocket.CONNECTING) {
+      socket.close();
+    }
+  }, WS_CONNECT_TIMEOUT_MS);
+}
+
+function clearConnectTimeout() {
+  if (!connectTimeoutTimer) return;
+  clearTimeout(connectTimeoutTimer);
+  connectTimeoutTimer = null;
+}
+
+function isSocketOpen(socket) {
+  return Boolean(socket) && socket.readyState === WebSocket.OPEN;
+}
+
+function isSocketConnecting(socket) {
+  return Boolean(socket) && socket.readyState === WebSocket.CONNECTING;
 }
 
 function registerServiceWorker() {
