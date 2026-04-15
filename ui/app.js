@@ -13,6 +13,7 @@ const LOG_PATTERNS = {
 const HEURISTIC_PROGRESS_THROTTLE_MS = 250;
 const HEURISTIC_PROGRESS_INCREMENT = 1;
 const HEURISTIC_PROGRESS_MAX = 95;
+const MAX_DOWNLOAD_URL_LENGTH = 2048;
 
 /* DOM refs */
 const providerList   = document.getElementById('providerList');
@@ -41,8 +42,8 @@ const downloadBtn    = document.getElementById('downloadBtn');
 /* ─── Fetch providers ─── */
 async function init() {
   registerServiceWorker();
-  if (cliToggle) cliToggle.checked = false;
   cliToggle?.addEventListener('change', updateCliVisibility);
+  if (cliToggle) cliToggle.checked = false;
   updateCliVisibility();
   setProgress(0, 'idle', 'Pronto a iniziare', 'Lo stato si aggiorna durante il download');
 
@@ -635,9 +636,15 @@ function connectWS() {
         appendTerminal(msg.text, msg.code === 0 ? 'green' : 'red');
         break;
       case 'file': {
-        configureDownloadButton(msg);
+        const safeUrl = getSafeDownloadUrl(msg?.url);
+        if (!safeUrl) {
+          appendTerminal('\n⚠️ URL download non valido.\n', 'stderr');
+          break;
+        }
+
+        configureDownloadButton(msg, safeUrl);
         const link = document.createElement('a');
-        link.href = msg.url;
+        link.href = safeUrl;
         link.target = '_blank';
         link.rel = 'noopener';
         if (msg.name) link.download = msg.name;
@@ -647,7 +654,7 @@ function connectWS() {
         terminal.appendChild(link);
         terminal.scrollTop = terminal.scrollHeight;
         setProgress(100, 'done', 'Download pronto', msg.name || 'File pronto');
-        notifyDownloadReady(msg.name, msg.url);
+        notifyDownloadReady(msg.name, safeUrl);
         break;
       }
       case 'stopped':
@@ -815,17 +822,28 @@ function resetDownloadButton() {
   downloadBtn.removeAttribute('download');
 }
 
-function configureDownloadButton(msg) {
-  if (!downloadBtn || !msg?.url) return;
-  downloadBtn.href = msg.url;
-  downloadBtn.target = '_blank';
-  downloadBtn.rel = 'noopener';
+function configureDownloadButton(msg, safeUrl) {
+  if (!downloadBtn || !safeUrl) return;
+  downloadBtn.href = safeUrl;
   if (msg.name) {
     downloadBtn.download = msg.name;
   } else {
     downloadBtn.removeAttribute('download');
   }
   downloadBtn.classList.remove('hidden');
+}
+
+function getSafeDownloadUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return null;
+  if (rawUrl.length > MAX_DOWNLOAD_URL_LENGTH) return null;
+  try {
+    const parsed = new URL(rawUrl, window.location.origin);
+    if (parsed.origin !== window.location.origin) return null;
+    if (!parsed.pathname.startsWith('/downloads/')) return null;
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return null;
+  }
 }
 
 function registerServiceWorker() {
