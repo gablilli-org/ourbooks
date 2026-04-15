@@ -3,6 +3,16 @@ let providers = {};
 let selectedProvider = null;
 let ws = null;
 let running = false;
+let progressValue = 0;
+let lastHeuristicProgressTick = 0;
+
+const LOG_PATTERNS = {
+  completedStage: /download completato|merging pages|processo terminato|download pronto/i,
+  activeStage: /downloading|converting page|processing annotations/i
+};
+const HEURISTIC_PROGRESS_THROTTLE_MS = 250;
+const HEURISTIC_PROGRESS_INCREMENT = 1;
+const HEURISTIC_PROGRESS_MAX = 95;
 
 /* DOM refs */
 const providerList   = document.getElementById('providerList');
@@ -18,9 +28,22 @@ const stopBtn        = document.getElementById('stopBtn');
 const terminalSection = document.getElementById('terminalSection');
 const terminal       = document.getElementById('terminal');
 const clearBtn       = document.getElementById('clearBtn');
+const cliToggle      = document.getElementById('cliToggle');
+const progressSection = document.getElementById('progressSection');
+const progressBadge  = document.getElementById('progressBadge');
+const progressLabel  = document.getElementById('progressLabel');
+const progressFill   = document.getElementById('progressFill');
+const progressPercent = document.getElementById('progressPercent');
+const progressHint   = document.getElementById('progressHint');
+const progressTrack  = document.querySelector('.progress-track');
 
 /* ─── Fetch providers ─── */
 async function init() {
+  registerServiceWorker();
+  cliToggle?.addEventListener('change', updateCliVisibility);
+  updateCliVisibility();
+  setProgress(0, 'idle', 'Pronto a iniziare', 'Lo stato si aggiorna durante il download');
+
   try {
     const res = await fetch('/api/providers.js');
     providers = await res.json();
@@ -61,6 +84,9 @@ function renderGrid() {
 /* ─── Select provider ─── */
 function selectProvider(id) {
   selectedProvider = id;
+  progressValue = 0;
+  lastHeuristicProgressTick = 0;
+  setProgress(0, 'idle', 'Pronto a iniziare', 'Lo stato si aggiorna durante il download');
 
   /* update sidebar active state */
   document.querySelectorAll('.provider-btn').forEach(btn => {
@@ -577,7 +603,6 @@ function connectWS() {
 
   ws.onopen = () => {
     appendTerminal('Connesso al server.\n', 'muted');
-    terminalSection.classList.remove('hidden');
   };
 
   ws.onmessage = (e) => {
@@ -587,16 +612,24 @@ function connectWS() {
     switch (msg.type) {
       case 'started':
         setRunning(true);
+        setProgress(3, 'running', 'Download in preparazione', 'Connessione al provider in corso');
         appendTerminal(msg.text, 'blue');
         break;
       case 'stdout':
+        updateProgressFromLog(msg.text);
         appendTerminal(msg.text, 'normal');
         break;
       case 'stderr':
+        updateProgressFromLog(msg.text);
         appendTerminal(msg.text, 'stderr');
         break;
       case 'done':
         setRunning(false);
+        if (msg.code === 0) {
+          setProgress(100, 'done', 'Completato', 'Il file è pronto al download');
+        } else {
+          setProgress(progressValue, 'error', 'Errore', 'Download terminato con errori');
+        }
         appendTerminal(msg.text, msg.code === 0 ? 'green' : 'red');
         break;
       case 'file': {
@@ -604,20 +637,24 @@ function connectWS() {
         link.href = msg.url;
         link.target = '_blank';
         link.rel = 'noopener';
+        if (msg.name) link.download = msg.name;
         link.textContent = `\n📄 Download pronto: ${msg.name} — clicca per aprire\n`;
         link.style.color = '#4ade80';
         link.style.display = 'block';
         terminal.appendChild(link);
         terminal.scrollTop = terminal.scrollHeight;
-        window.open(msg.url, '_blank', 'noopener');
+        setProgress(100, 'done', 'Download pronto', msg.name || 'File pronto');
+        notifyDownloadReady(msg.name, msg.url);
         break;
       }
       case 'stopped':
         setRunning(false);
+        setProgress(progressValue, 'stopped', 'Interrotto', 'Download interrotto manualmente');
         appendTerminal(msg.text, 'yellow');
         break;
       case 'error':
         setRunning(false);
+        setProgress(progressValue, 'error', 'Errore', 'Si è verificato un problema durante il download');
         appendTerminal(msg.text, 'stderr');
         break;
     }
@@ -645,6 +682,9 @@ downloadFormEl.addEventListener('submit', (e) => {
   }
 
   terminal.textContent = '';
+  progressValue = 0;
+  lastHeuristicProgressTick = 0;
+  setProgress(2, 'running', 'Download avviato', 'Preparazione richiesta');
   ws.send(JSON.stringify({ type: 'start', provider: selectedProvider, options }));
 });
 
@@ -665,6 +705,7 @@ function setRunning(state) {
   running = state;
   startBtn.disabled = state;
   stopBtn.classList.toggle('hidden', !state);
+  progressSection.classList.remove('hidden');
 }
 
 function appendTerminal(text, style) {
@@ -685,6 +726,115 @@ function appendTerminal(text, style) {
   span.textContent = text;
   terminal.appendChild(span);
   terminal.scrollTop = terminal.scrollHeight;
+}
+
+function updateCliVisibility() {
+  const visible = Boolean(cliToggle?.checked);
+  terminalSection.classList.toggle('hidden', !visible);
+}
+
+function setProgress(percent, status, label, hint) {
+  const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  progressValue = Math.max(progressValue, safePercent);
+  if (status === 'idle') progressValue = safePercent;
+
+  progressFill.style.width = `${progressValue}%`;
+  progressPercent.textContent = `${Math.round(progressValue)}%`;
+  progressLabel.textContent = label;
+  progressHint.textContent = hint;
+  progressBadge.textContent =
+    status === 'running' ? 'In corso' :
+    status === 'done' ? 'Completato' :
+    status === 'error' ? 'Errore' :
+    status === 'stopped' ? 'Interrotto' :
+    'In attesa';
+  progressBadge.className = `status-pill ${status}`;
+  progressTrack?.setAttribute('aria-valuenow', String(Math.round(progressValue)));
+}
+
+function updateProgressFromLog(text) {
+  const lines = String(text || '').split('\n');
+  for (const line of lines) {
+    const normalized = line.replace(/,/g, '.');
+
+    const percentMatch = normalized.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (percentMatch) {
+      const percent = Number(percentMatch[1]);
+      if (Number.isFinite(percent)) {
+        setProgress(percent, 'running', 'Download in corso', 'Avanzamento stimato dai log');
+      }
+      continue;
+    }
+
+    const slashMatch = normalized.match(/\b(\d+)\s*\/\s*(\d+)\b/);
+    if (slashMatch) {
+      const current = Number(slashMatch[1]);
+      const total = Number(slashMatch[2]);
+      const ratio = calculateProgressRatio(current, total);
+      if (ratio !== null) setProgress(ratio, 'running', 'Download in corso', `Passo ${current} di ${total}`);
+      continue;
+    }
+
+    const ofMatch = normalized.match(/\b(\d+)\s+of\s+(\d+)\b/i);
+    if (ofMatch) {
+      const current = Number(ofMatch[1]);
+      const total = Number(ofMatch[2]);
+      const ratio = calculateProgressRatio(current, total);
+      if (ratio !== null) setProgress(ratio, 'running', 'Download in corso', `Passo ${current} di ${total}`);
+      continue;
+    }
+
+    if (LOG_PATTERNS.completedStage.test(normalized)) {
+      setProgress(98, 'running', 'Finalizzazione', 'Composizione file finale');
+      continue;
+    }
+
+    if (LOG_PATTERNS.activeStage.test(normalized)) {
+      const now = Date.now();
+      if (now - lastHeuristicProgressTick >= HEURISTIC_PROGRESS_THROTTLE_MS) {
+        lastHeuristicProgressTick = now;
+        setProgress(Math.min(progressValue + HEURISTIC_PROGRESS_INCREMENT, HEURISTIC_PROGRESS_MAX), 'running', 'Download in corso', 'Elaborazione pagine');
+      }
+    }
+  }
+}
+
+function calculateProgressRatio(current, total) {
+  if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0 || current < 0) return null;
+  return (current / total) * 100;
+}
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('Service worker registration failed:', err);
+    });
+  });
+}
+
+async function notifyDownloadReady(fileName, fileUrl) {
+  if (!('serviceWorker' in navigator) || !('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    try {
+      await Notification.requestPermission();
+    } catch {
+      return;
+    }
+  }
+  if (Notification.permission !== 'granted') return;
+
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification('ourbooks', {
+      body: fileName ? `Download pronto: ${fileName}` : 'Download completato',
+      icon: '/icon.svg',
+      badge: '/icon.svg',
+      data: { url: fileUrl || '/' }
+    });
+  } catch {
+    /* noop */
+  }
 }
 
 /* ─── Boot ─── */
