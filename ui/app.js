@@ -36,10 +36,12 @@ const progressFill   = document.getElementById('progressFill');
 const progressPercent = document.getElementById('progressPercent');
 const progressHint   = document.getElementById('progressHint');
 const progressTrack  = document.querySelector('.progress-track');
+const downloadBtn    = document.getElementById('downloadBtn');
 
 /* ─── Fetch providers ─── */
 async function init() {
   registerServiceWorker();
+  if (cliToggle) cliToggle.checked = false;
   cliToggle?.addEventListener('change', updateCliVisibility);
   updateCliVisibility();
   setProgress(0, 'idle', 'Pronto a iniziare', 'Lo stato si aggiorna durante il download');
@@ -52,7 +54,6 @@ async function init() {
     connectWS();
   } catch (err) {
     appendTerminal(`\nErrore di connessione al server: ${err.message}\n`, 'stderr');
-    terminalSection.classList.remove('hidden');
   }
 }
 
@@ -84,6 +85,7 @@ function renderGrid() {
 /* ─── Select provider ─── */
 function selectProvider(id) {
   selectedProvider = id;
+  resetDownloadButton();
   progressValue = 0;
   lastHeuristicProgressTick = 0;
   setProgress(0, 'idle', 'Pronto a iniziare', 'Lo stato si aggiorna durante il download');
@@ -633,6 +635,7 @@ function connectWS() {
         appendTerminal(msg.text, msg.code === 0 ? 'green' : 'red');
         break;
       case 'file': {
+        configureDownloadButton(msg);
         const link = document.createElement('a');
         link.href = msg.url;
         link.target = '_blank';
@@ -682,6 +685,7 @@ downloadFormEl.addEventListener('submit', (e) => {
   }
 
   terminal.textContent = '';
+  resetDownloadButton();
   progressValue = 0;
   lastHeuristicProgressTick = 0;
   setProgress(2, 'running', 'Download avviato', 'Preparazione richiesta');
@@ -802,6 +806,26 @@ function updateProgressFromLog(text) {
 function calculateProgressRatio(current, total) {
   if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0 || current < 0) return null;
   return (current / total) * 100;
+}
+
+function resetDownloadButton() {
+  if (!downloadBtn) return;
+  downloadBtn.classList.add('hidden');
+  downloadBtn.removeAttribute('href');
+  downloadBtn.removeAttribute('download');
+}
+
+function configureDownloadButton(msg) {
+  if (!downloadBtn || !msg?.url) return;
+  downloadBtn.href = msg.url;
+  downloadBtn.target = '_blank';
+  downloadBtn.rel = 'noopener';
+  if (msg.name) {
+    downloadBtn.download = msg.name;
+  } else {
+    downloadBtn.removeAttribute('download');
+  }
+  downloadBtn.classList.remove('hidden');
 }
 
 function registerServiceWorker() {
