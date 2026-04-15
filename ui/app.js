@@ -5,6 +5,8 @@ let ws = null;
 let running = false;
 let progressValue = 0;
 let lastHeuristicProgressTick = 0;
+let reconnectTimer = null;
+let reconnectNoticeShown = false;
 
 const LOG_PATTERNS = {
   completedStage: /download completato|merging pages|processo terminato|download pronto/i,
@@ -14,6 +16,7 @@ const HEURISTIC_PROGRESS_THROTTLE_MS = 250;
 const HEURISTIC_PROGRESS_INCREMENT = 1;
 const HEURISTIC_PROGRESS_MAX = 95;
 const MAX_DOWNLOAD_URL_LENGTH = 2048;
+const WS_RECONNECT_DELAY_MS = 1200;
 
 /* DOM refs */
 const providerList   = document.getElementById('providerList');
@@ -44,6 +47,7 @@ async function init() {
   registerServiceWorker();
   cliToggle?.addEventListener('change', updateCliVisibility);
   if (cliToggle) cliToggle.checked = false;
+  bindConnectionLifecycle();
   updateCliVisibility();
   setProgress(0, 'idle', 'Pronto a iniziare', 'Lo stato si aggiorna durante il download');
 
@@ -601,14 +605,18 @@ function setupBsmartBookLoader() {
 
 /* ─── WebSocket ─── */
 function connectWS() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${protocol}//${location.host}`);
+  const socket = new WebSocket(`${protocol}//${location.host}`);
+  ws = socket;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    reconnectNoticeShown = false;
+    clearReconnectTimer();
     appendTerminal('Connesso al server.\n', 'muted');
   };
 
-  ws.onmessage = (e) => {
+  socket.onmessage = (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
 
@@ -670,20 +678,28 @@ function connectWS() {
     }
   };
 
-  ws.onclose = () => {
-    appendTerminal('\nConnessione chiusa. Ricarica la pagina per riconnetterti.\n', 'muted');
+  socket.onclose = () => {
+    if (ws === socket) ws = null;
     setRunning(false);
+    scheduleReconnect();
   };
 
-  ws.onerror = () => {
-    appendTerminal('\nErrore WebSocket.\n', 'stderr');
+  socket.onerror = () => {
+    if (document.visibilityState === 'visible') {
+      scheduleReconnect();
+    }
   };
 }
 
 /* ─── Start download ─── */
 downloadFormEl.addEventListener('submit', (e) => {
   e.preventDefault();
-  if (!selectedProvider || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!selectedProvider) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    ensureWSConnected();
+    appendTerminal('\nConnessione in ripristino, riprova tra pochi secondi.\n', 'muted');
+    return;
+  }
 
   const formData = new FormData(downloadFormEl);
   const options = {};
@@ -844,6 +860,42 @@ function getSafeDownloadUrl(rawUrl) {
   } catch {
     return null;
   }
+}
+
+function bindConnectionLifecycle() {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      ensureWSConnected();
+    }
+  });
+
+  window.addEventListener('pageshow', ensureWSConnected);
+  window.addEventListener('online', ensureWSConnected);
+}
+
+function ensureWSConnected() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  clearReconnectTimer();
+  connectWS();
+}
+
+function scheduleReconnect() {
+  if (document.visibilityState !== 'visible') return;
+  if (reconnectTimer || (ws && ws.readyState === WebSocket.CONNECTING)) return;
+  if (!reconnectNoticeShown) {
+    reconnectNoticeShown = true;
+    appendTerminal('\nConnessione persa, riconnessione automatica...\n', 'muted');
+  }
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    ensureWSConnected();
+  }, WS_RECONNECT_DELAY_MS);
+}
+
+function clearReconnectTimer() {
+  if (!reconnectTimer) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
 }
 
 function registerServiceWorker() {
